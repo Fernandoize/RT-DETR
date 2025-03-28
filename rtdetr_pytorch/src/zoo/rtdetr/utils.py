@@ -15,20 +15,27 @@ def inverse_sigmoid(x: torch.Tensor, eps: float=1e-5) -> torch.Tensor:
 def deformable_attention_core_func(value, value_spatial_shapes, sampling_locations, attention_weights):
     """
     Args:
-        value (Tensor): [bs, value_length, n_head, c]
-        value_spatial_shapes (Tensor|List): [n_levels, 2]
+        value (Tensor): [bs, value_length, n_head, c]，输入特征
+        value_spatial_shapes (Tensor|List): [n_levels, 2] 特征图的形状
         value_level_start_index (Tensor|List): [n_levels]
         sampling_locations (Tensor): [bs, query_length, n_head, n_levels, n_points, 2]
-        attention_weights (Tensor): [bs, query_length, n_head, n_levels, n_points]
+        query_length 是查询的长度，采样位置的形状: n_points 每个查询点采样的位置数
+        attention_weights (Tensor): [bs, query_length, n_head, n_levels, n_points] 注意力权重
 
     Returns:
         output (Tensor): [bs, Length_{query}, C]
     """
+    #
     bs, _, n_head, c = value.shape
     _, Len_q, _, n_levels, n_points, _ = sampling_locations.shape
 
+    # 每个层级的形状
     split_shape = [h * w for h, w in value_spatial_shapes]
+
+    # 将value分割为不同层级的形状
     value_list = value.split(split_shape, dim=1)
+
+    # 将sample_locations从[0, 1]转换为[-1, 1]
     sampling_grids = 2 * sampling_locations - 1
     sampling_value_list = []
     for level, (h, w) in enumerate(value_spatial_shapes):

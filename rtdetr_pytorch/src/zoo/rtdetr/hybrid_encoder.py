@@ -86,6 +86,9 @@ class RepVggBlock(nn.Module):
 
 
 class CSPRepLayer(nn.Module):
+    """
+    Cross Stage Partial 结合了 RepVggBlock 来实现高效的卷积操作
+    """
     def __init__(self,
                  in_channels,
                  out_channels,
@@ -182,19 +185,32 @@ class TransformerEncoder(nn.Module):
 @register
 class HybridEncoder(nn.Module):
     def __init__(self,
+                 # 输入特征的channel数
                  in_channels=[512, 1024, 2048],
+                 # 表示特征图相对于输入图像的缩小倍数
                  feat_strides=[8, 16, 32],
+                 # Transformer 和 FPN 中使用的隐藏层维度
                  hidden_dim=256,
+                 # Transformer 的多头注意力机制中的头数
                  nhead=8,
+                 # ransformer 中前馈网络的维度
                  dim_feedforward = 1024,
+                 # Transformer 中的 dropout 比例
                  dropout=0.0,
+                 # Transformer 中的激活函数（如 GELU
                  enc_act='gelu',
+                 # 指定哪些层级的特征图需要经过 Transformer 编码器处理
                  use_encoder_idx=[2],
+                 # 每个 Transformer 编码器的层数
                  num_encoder_layers=1,
+                 # 位置编码的温度参数，用于控制位置编码的频率
                  pe_temperature=10000,
+                 # 用于控制 CSPRepLayer 的扩展因子和深度
                  expansion=1.0,
                  depth_mult=1.0,
+                 # 卷积层中的激活函数（如 SiLU
                  act='silu',
+                 # 评估时输入图像的固定空间尺寸
                  eval_spatial_size=None):
         super().__init__()
         self.in_channels = in_channels
@@ -207,8 +223,10 @@ class HybridEncoder(nn.Module):
 
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
-        
+
         # channel projection
+        # 使用 input_proj 将每个特征图投影到统一的 hidden_dim 维度
+
         self.input_proj = nn.ModuleList()
         for in_channel in in_channels:
             self.input_proj.append(
@@ -219,6 +237,9 @@ class HybridEncoder(nn.Module):
             )
 
         # encoder transformer
+        # 对指定的层级（use_encoder_idx）应用 Transformer 编码器。
+        # 将特征图展平为 [B, H*W, C] 的形状，添加位置编码后输入 Transformer。
+        # 将 Transformer 的输出恢复为 [B, C, H, W] 的形状。
         encoder_layer = TransformerEncoderLayer(
             hidden_dim, 
             nhead=nhead,
@@ -231,15 +252,18 @@ class HybridEncoder(nn.Module):
         ])
 
         # top-down fpn
+        # 从高层级到低层级，通过上采样和特征融合逐步生成金字塔特征
         self.lateral_convs = nn.ModuleList()
         self.fpn_blocks = nn.ModuleList()
         for _ in range(len(in_channels) - 1, 0, -1):
             self.lateral_convs.append(ConvNormLayer(hidden_dim, hidden_dim, 1, 1, act=act))
+            # 从上到下降维
             self.fpn_blocks.append(
                 CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
             )
 
         # bottom-up pan
+        # 从低层级到高层级，通过下采样和特征融合进一步优化金字塔特征
         self.downsample_convs = nn.ModuleList()
         self.pan_blocks = nn.ModuleList()
         for _ in range(len(in_channels) - 1):
@@ -300,6 +324,7 @@ class HybridEncoder(nn.Module):
                 proj_feats[enc_ind] = memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()
                 # print([x.is_contiguous() for x in proj_feats ])
 
+        # 是否可以先融合
         # broadcasting and fusion
         inner_outs = [proj_feats[-1]]
         for idx in range(len(self.in_channels) - 1, 0, -1):

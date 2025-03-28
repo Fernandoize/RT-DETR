@@ -5,7 +5,8 @@ criterion: SetCriterion
 postprocessor: RTDETRPostProcessor
 
 
-RTDETR: 
+RTDETR:
+  # resnet + 多层特征
   backbone: PResNet
   encoder: HybridEncoder
   decoder: RTDETRTransformer
@@ -15,6 +16,7 @@ PResNet:
   depth: 50
   variant: d
   freeze_at: 0
+  # 仅使用1,2,3层特征
   return_idx: [1, 2, 3]
   num_stages: 4
   freeze_norm: True

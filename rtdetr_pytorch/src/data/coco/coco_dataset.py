@@ -4,7 +4,7 @@
 COCO dataset which returns image_id for evaluation.
 Mostly copy-paste from https://github.com/pytorch/vision/blob/13b35ff/references/detection/coco_utils.py
 """
-
+import numpy as np
 import torch
 import torch.utils.data
 
@@ -25,7 +25,7 @@ class CocoDetection(torchvision.datasets.CocoDetection):
     __inject__ = ['transforms']
     __share__ = ['remap_mscoco_category']
     
-    def __init__(self, img_folder, ann_file, transforms, return_masks, remap_mscoco_category=False):
+    def __init__(self, img_folder, ann_file, transforms, return_masks, remap_mscoco_category=False,  fraction=0.01):
         super(CocoDetection, self).__init__(img_folder, ann_file)
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks, remap_mscoco_category)
@@ -33,6 +33,11 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         self.ann_file = ann_file
         self.return_masks = return_masks
         self.remap_mscoco_category = remap_mscoco_category
+
+        before_size = len(self.ids)
+        self.ids = np.random.choice(self.ids, size=int(len(self.ids) * fraction)).tolist()
+        print(f"before_size: {before_size}, sample size: {len(self.ids)}")
+        # self.ids = list(range(int(len(self.ids) * fraction)))
 
     def __getitem__(self, idx):
         img, target = super(CocoDetection, self).__getitem__(idx)

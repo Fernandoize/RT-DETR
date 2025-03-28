@@ -35,8 +35,6 @@ class MLP(nn.Module):
             x = self.act(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
 
-
-
 class MSDeformableAttention(nn.Module):
     def __init__(self, embed_dim=256, num_heads=8, num_levels=4, num_points=4,):
         """
@@ -110,10 +108,18 @@ class MSDeformableAttention(nn.Module):
         if value_mask is not None:
             value_mask = value_mask.astype(value.dtype).unsqueeze(-1)
             value *= value_mask
+
+        # dim = num_head * head_dim
         value = value.reshape(bs, Len_v, self.num_heads, self.head_dim)
 
+        # 使用 query samping offset
+
+        # [bs, len, heads, level, points, 2] 2代表x, y两个方向
+        # mlp生成
         sampling_offsets = self.sampling_offsets(query).reshape(
             bs, Len_q, self.num_heads, self.num_levels, self.num_points, 2)
+
+        # offset的权重 使用 mlp生成
         attention_weights = self.attention_weights(query).reshape(
             bs, Len_q, self.num_heads, self.num_levels * self.num_points)
         attention_weights = F.softmax(attention_weights, dim=-1).reshape(
@@ -123,9 +129,13 @@ class MSDeformableAttention(nn.Module):
             offset_normalizer = torch.tensor(value_spatial_shapes)
             offset_normalizer = offset_normalizer.flip([1]).reshape(
                 1, 1, 1, self.num_levels, 1, 2)
+
+            # reference_points 的范围在0-1之间, 先将 sampling_offsets 归一化道参考点0-1范围之内
             sampling_locations = reference_points.reshape(
                 bs, Len_q, 1, self.num_levels, 1, 2
             ) + sampling_offsets / offset_normalizer
+
+        # shape为4代表参考点的坐标为(x, y, w, h)
         elif reference_points.shape[-1] == 4:
             sampling_locations = (
                 reference_points[:, :, None, :, None, :2] + sampling_offsets /
@@ -135,6 +145,10 @@ class MSDeformableAttention(nn.Module):
                 "Last dim of reference_points must be 2 or 4, but get {} instead.".
                 format(reference_points.shape[-1]))
 
+        # value [b, token_len, head, head_dim]
+        # value spatial shapes [[a, a], [b, b], [c, c], [d, d]]
+        # sampling_locations 已经进行了偏移 [b, query_size, head, level, points_num, location(x, y)]
+        # attention_weights[b, query_size, head, level, points_num] 一个location一个weights
         output = self.ms_deformable_attn_core(value, value_spatial_shapes, sampling_locations, attention_weights)
 
         output = self.output_proj(output)
@@ -208,7 +222,7 @@ class TransformerDecoderLayer(nn.Module):
         tgt = self.norm1(tgt)
 
         # cross attention
-        tgt2 = self.cross_attn(\
+        tgt2 = self.cross_attn(
             self.with_pos_embed(tgt, query_pos_embed), 
             reference_points, 
             memory, 
@@ -235,6 +249,7 @@ class TransformerDecoder(nn.Module):
 
     def forward(self,
                 tgt,
+                # 参考点
                 ref_points_unact,
                 memory,
                 memory_spatial_shapes,
@@ -486,10 +501,12 @@ class RTDETRTransformer(nn.Module):
         output_memory = self.enc_output(memory)
 
         enc_outputs_class = self.enc_score_head(output_memory)
+        # 参考点是encoder输出的token + anchors获得的
         enc_outputs_coord_unact = self.enc_bbox_head(output_memory) + anchors
 
         _, topk_ind = torch.topk(enc_outputs_class.max(-1).values, self.num_queries, dim=1)
-        
+
+        # 参考点 & 归一化
         reference_points_unact = enc_outputs_coord_unact.gather(dim=1, \
             index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_outputs_coord_unact.shape[-1]))
 

@@ -68,6 +68,10 @@ class BasicBlock(nn.Module):
 
 
 class BottleNeck(nn.Module):
+    """
+    针对50和101、152层的残差结构
+    expansion = 4 代表残差结构中第二层和第三层卷积核的个数发生4倍变化
+    """
     expansion = 4
 
     def __init__(self, ch_in, ch_out, stride, shortcut, act='relu', variant='b'):
@@ -140,11 +144,13 @@ class Blocks(nn.Module):
 
 @register
 class PResNet(nn.Module):
+    """加入了多尺度特征"""
     def __init__(
         self, 
-        depth, 
+        depth,
         variant='d', 
-        num_stages=4, 
+        num_stages=4,
+        # 返回的特征层数
         return_idx=[0, 1, 2, 3], 
         act='relu',
         freeze_at=-1, 

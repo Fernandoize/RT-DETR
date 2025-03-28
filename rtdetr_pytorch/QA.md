@@ -1,15 +1,15 @@
+### PResNet 和 DLANet的区别
 
-__include__: [
-  '../dataset/coco_detection.yml',
-  '../runtime.yml',
-  './include/dataloader.yml',
-  './include/optimizer.yml',
-  './include/rtdetr_r50vd.yml',
-]
+PResNet采用了并行残差模块设计，DLANet在不同层级之间进行融合，强调浅层和深层特征的融合
 
+### 如何训练自己的数据集
+* 修改类别数
+```yaml
 num_classes: 5
 remap_mscoco_category: False
-
+```
+* 修改dataloader中coco格式json和image的配置 注意：此处需要同时修改transform的配置，否则会导致默认的transform丢失
+```yaml
 train_dataloader:
   type: DataLoader
   dataset:
@@ -34,8 +34,9 @@ train_dataloader:
         - { type: ConvertBox, out_fmt: 'cxcywh', normalize: True }
   shuffle: True
   batch_size: 8
-  num_workers: 0
+  num_workers: 4
   drop_last: True
+
   collate_fn: default_collate_fn
 
 
@@ -56,46 +57,7 @@ val_dataloader:
 
   shuffle: False
   batch_size: 8
-  num_workers: 0
+  num_workers: 4
   drop_last: False
   collate_fn: default_collate_fn
-
-output_dir: ./output/rtdetr_r18vd_6x_coco
-
-PResNet:
-  depth: 18
-  freeze_at: -1
-  freeze_norm: False
-  pretrained: True
-
-HybridEncoder:
-  in_channels: [128, 256, 512]
-  hidden_dim: 256
-  expansion: 0.5
-
-
-RTDETRTransformer:
-  eval_idx: -1
-  num_decoder_layers: 3
-  num_denoising: 100
-
-
-
-optimizer:
-  type: AdamW
-  params: 
-    - 
-      params: '^(?=.*backbone)(?=.*norm).*$'
-      lr: 0.00001
-      weight_decay: 0.
-    - 
-      params: '^(?=.*backbone)(?!.*norm).*$'
-      lr: 0.00001
-    - 
-      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bias)).*$'
-      weight_decay: 0.
-
-  lr: 0.0001
-  betas: [0.9, 0.999]
-  weight_decay: 0.0001
-
+```
