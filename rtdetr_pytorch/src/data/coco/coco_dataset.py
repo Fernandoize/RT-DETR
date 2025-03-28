@@ -23,7 +23,7 @@ __all__ = ['CocoDetection']
 @register
 class CocoDetection(torchvision.datasets.CocoDetection):
     __inject__ = ['transforms']
-    __share__ = ['remap_mscoco_category']
+    __share__ = ['remap_mscoco_category', 'fraction']
     
     def __init__(self, img_folder, ann_file, transforms, return_masks, remap_mscoco_category=False,  fraction=0.01):
         super(CocoDetection, self).__init__(img_folder, ann_file)
@@ -35,8 +35,8 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         self.remap_mscoco_category = remap_mscoco_category
 
         before_size = len(self.ids)
-        self.ids = np.random.choice(self.ids, size=int(len(self.ids) * fraction)).tolist()
-        print(f"before_size: {before_size}, sample size: {len(self.ids)}")
+        self.ids = self.ids[:int(len(self.ids) * fraction)]
+        print(f"{self.ann_file}, before_size: {before_size}, sample size: {len(self.ids)}")
         # self.ids = list(range(int(len(self.ids) * fraction)))
 
     def __getitem__(self, idx):
