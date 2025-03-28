@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn 
-import torchvision.transforms as T
+import torchvision.transforms.v2 as T
 from torch.cuda.amp import autocast
 import numpy as np 
 from PIL import Image, ImageDraw, ImageFont
@@ -145,7 +145,7 @@ def main(args, ):
     
     transforms = T.Compose([
         T.Resize((640, 640)),  
-        T.ToTensor(),
+        T.ToImage(),
     ])
     im_data = transforms(im_pil)[None].to(args.device)
     if args.sliced:

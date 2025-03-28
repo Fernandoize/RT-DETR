@@ -9,7 +9,7 @@ __include__: [
 
 num_classes: 5
 remap_mscoco_category: False
-fraction: 1
+fraction: 0.01
 
 train_dataloader:
   type: DataLoader
@@ -26,7 +26,7 @@ train_dataloader:
         - { type: RandomIoUCrop, p: 0.8 }
         - { type: SanitizeBoundingBoxes, min_size: 1 }
         - { type: RandomHorizontalFlip }
-        - { type: Resize, size: [ 224, 224 ], }
+        - { type: Resize, size: [ 640, 640 ], }
         # - {type: Resize, size: 639, max_size: 640}
         # - {type: PadToSize, spatial_size: 640}
         - {type: ToImage}
@@ -34,8 +34,8 @@ train_dataloader:
         - {type: SanitizeBoundingBoxes, min_size: 1}
         - {type: ConvertBox, out_fmt: 'cxcywh', normalize: True}
   shuffle: True
-  batch_size: 16
-  num_workers: 4
+  batch_size: 8
+  num_workers: 0
   drop_last: True
   collate_fn: default_collate_fn
 
@@ -51,13 +51,13 @@ val_dataloader:
       ops:
         # - {type: Resize, size: 639, max_size: 640}
         # - {type: PadToSize, spatial_size: 640}
-        - {type: Resize, size: [224, 224]}
+        - {type: Resize, size: [640, 640]}
         - {type: ToImage}
         - {type: ToDtype}
 
   shuffle: False
-  batch_size: 16
-  num_workers: 4
+  batch_size: 4
+  num_workers: 0
   drop_last: False
   collate_fn: default_collate_fn
 
