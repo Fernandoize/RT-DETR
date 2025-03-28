@@ -46,6 +46,7 @@ def deformable_attention_core_func(value, value_spatial_shapes, sampling_locatio
         sampling_grid_l_ = sampling_grids[:, :, :, level].permute(
             0, 2, 1, 3, 4).flatten(0, 1)
         # N_*M_, D_, Lq_, P_
+        # 基于采样网格grid从input中提取值
         sampling_value_l_ = F.grid_sample(
             value_l_,
             sampling_grid_l_,

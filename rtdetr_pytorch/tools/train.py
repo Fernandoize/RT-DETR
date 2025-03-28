@@ -2,7 +2,10 @@
 """
 
 import os 
-import sys 
+import sys
+
+from PIL import Image
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import argparse
 
@@ -10,6 +13,7 @@ import src.misc.dist as dist
 from src.core import YAMLConfig 
 from src.solver import TASKS
 
+Image.MAX_IMAGE_PIXELS = None
 
 def main(args, ) -> None:
     '''main

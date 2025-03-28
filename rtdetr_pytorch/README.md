@@ -89,7 +89,26 @@ torchrun --nproc_per_node=4 tools/train.py -c configs/rtdetr/rtdetr_r50vd_6x_coc
 
 </details>
 
+<details>
+<summary> Benchmark </summary>
 
+1. Setup
+```shell
+pip install -r tools/benchmark/requirements.txt
+export model=l  # n s m l x
+```
+
+<!-- <summary>6. Benchmark </summary> -->
+2. Model FLOPs, MACs, and Params
+```shell
+python tools/benchmark/get_info.py -c configs/dfine/dfine_hgnetv2_${model}_coco.yml
+```
+
+2. TensorRT Latency
+```shell
+python tools/benchmark/trt_benchmark.py --COCO_dir path/to/COCO2017 --engine_dir model.engine
+```
+</details>
 
 <details>
 <summary>Export</summary>

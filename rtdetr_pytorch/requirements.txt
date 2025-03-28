@@ -4,5 +4,9 @@ onnx==1.17.0
 onnxruntime==1.17.0
 pycocotools
 PyYAML
-scipy
+scipy~=1.12.0
 transformers
+torchtune==0.6.0
+torchao==0.9.0
+numpy~=1.26.4
+packaging~=24.2

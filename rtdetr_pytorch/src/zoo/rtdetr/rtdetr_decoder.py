@@ -8,7 +8,9 @@ from collections import OrderedDict
 import torch 
 import torch.nn as nn 
 import torch.nn.functional as F 
-import torch.nn.init as init 
+import torch.nn.init as init
+
+from torchtune.modules import attention as gqa
 
 from .denoising import get_contrastive_denoising_training_group
 from .utils import deformable_attention_core_func, get_activation, inverse_sigmoid
@@ -20,6 +22,7 @@ from src.core import register
 
 __all__ = ['RTDETRTransformer']
 
+from ..group_query_attention.GroupQueryAttention import GroupQueryAttention
 
 
 class MLP(nn.Module):
@@ -164,11 +167,17 @@ class TransformerDecoderLayer(nn.Module):
                  dropout=0.,
                  activation="relu",
                  n_levels=4,
-                 n_points=4,):
+                 n_points=4,
+                 n_kv_head=2,
+                 use_gqa=True,
+                 ):
         super(TransformerDecoderLayer, self).__init__()
 
         # self attention
-        self.self_attn = nn.MultiheadAttention(d_model, n_head, dropout=dropout, batch_first=True)
+        if use_gqa:
+            self.self_attn = GroupQueryAttention(embed_dim=d_model, num_heads=n_head, num_kv_heads=n_kv_head, attn_dropout=dropout)
+        else:
+            self.self_attn = nn.MultiheadAttention(d_model, n_head, dropout=dropout, batch_first=True)
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
 
