@@ -1,28 +1,23 @@
 """by lyuwenyu
 """
 
-import math 
-import copy 
+import copy
+import math
 from collections import OrderedDict
 
-import torch 
-import torch.nn as nn 
-import torch.nn.functional as F 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import torch.nn.init as init
 
-from torchtune.modules import attention as gqa
-
-from .denoising import get_contrastive_denoising_training_group
-from .utils import deformable_attention_core_func, get_activation, inverse_sigmoid
-from .utils import bias_init_with_prob
-
-
 from src.core import register
-
+from .denoising import get_contrastive_denoising_training_group
+from .utils import bias_init_with_prob
+from .utils import deformable_attention_core_func, get_activation, inverse_sigmoid
 
 __all__ = ['RTDETRTransformer']
 
-from ..group_query_attention.GroupQueryAttention import GroupQueryAttention
+from ..group_query_attention.grop_query_attention import GroupQueryAttention
 
 
 class MLP(nn.Module):
@@ -158,7 +153,6 @@ class MSDeformableAttention(nn.Module):
 
         return output
 
-
 class TransformerDecoderLayer(nn.Module):
     def __init__(self,
                  d_model=256,
@@ -169,7 +163,7 @@ class TransformerDecoderLayer(nn.Module):
                  n_levels=4,
                  n_points=4,
                  n_kv_head=2,
-                 use_gqa=True,
+                 use_gqa=False,
                  ):
         super(TransformerDecoderLayer, self).__init__()
 
@@ -232,8 +226,11 @@ class TransformerDecoderLayer(nn.Module):
 
         # cross attention
         tgt2 = self.cross_attn(
-            self.with_pos_embed(tgt, query_pos_embed), 
-            reference_points, 
+            # query
+            self.with_pos_embed(tgt, query_pos_embed),
+            # 参考点
+            reference_points,
+            # k,v token
             memory, 
             memory_spatial_shapes, 
             memory_mask)
@@ -295,6 +292,7 @@ class TransformerDecoder(nn.Module):
                 dec_out_bboxes.append(inter_ref_bbox)
                 break
 
+            # 保存上一层的参考点
             ref_points = inter_ref_bbox
             ref_points_detach = inter_ref_bbox.detach(
             ) if self.training else inter_ref_bbox
@@ -347,16 +345,19 @@ class RTDETRTransformer(nn.Module):
         self.eval_spatial_size = eval_spatial_size
         self.aux_loss = aux_loss
 
-        # backbone feature projection
+        # backbone feature projection： 将来自于backbone的特征投影到统一的维度 hidden_dim
         self._build_input_proj_layer(feat_channels)
 
-        # Transformer module
+        # 解码器
+        # Transformer module 每层包含自注意力机制和交叉注意力机制
         decoder_layer = TransformerDecoderLayer(hidden_dim, nhead, dim_feedforward, dropout, activation, num_levels, num_decoder_points)
         self.decoder = TransformerDecoder(hidden_dim, decoder_layer, num_decoder_layers, eval_idx)
 
         self.num_denoising = num_denoising
         self.label_noise_ratio = label_noise_ratio
         self.box_noise_scale = box_noise_scale
+
+        # 用于去噪训练中的类别嵌入
         # denoising part
         if num_denoising > 0: 
             # self.denoising_class_embed = nn.Embedding(num_classes, hidden_dim, padding_idx=num_classes-1) # TODO for load paddle weights
@@ -368,15 +369,20 @@ class RTDETRTransformer(nn.Module):
             self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
         self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
 
-        # encoder head
+        # 编码器
+        # encoder head: 对编码器进一步处理，生成编码器的最终输出
+        # layernorm可以尝试替换为hekaiming最新提出的模块或者dw卷积
         self.enc_output = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim,)
         )
+
+        # 生成类别分数和边界框坐标
         self.enc_score_head = nn.Linear(hidden_dim, num_classes)
         self.enc_bbox_head = MLP(hidden_dim, hidden_dim, 4, num_layers=3)
 
         # decoder head
+        # 解码器的输出：类别分数、边界框坐标
         self.dec_score_head = nn.ModuleList([
             nn.Linear(hidden_dim, num_classes)
             for _ in range(num_decoder_layers)
@@ -464,6 +470,7 @@ class RTDETRTransformer(nn.Module):
 
     def _generate_anchors(self,
                           spatial_shapes=None,
+                          # 0.05 适合于捕捉中小尺寸的目标
                           grid_size=0.05,
                           dtype=torch.float32,
                           device='cpu'):
@@ -478,44 +485,63 @@ class RTDETRTransformer(nn.Module):
                 torch.arange(end=w, dtype=dtype), indexing='ij')
             grid_xy = torch.stack([grid_x, grid_y], -1)
             valid_WH = torch.tensor([w, h]).to(dtype)
+            # 计算grid_xy的中心点，然后与特征图的大小进行归一化
             grid_xy = (grid_xy.unsqueeze(0) + 0.5) / valid_WH
+            # x,y代表参考点中心坐标，wh代表宽和高
             wh = torch.ones_like(grid_xy) * grid_size * (2.0 ** lvl)
             anchors.append(torch.concat([grid_xy, wh], -1).reshape(-1, h * w, 4))
 
         anchors = torch.concat(anchors, 1).to(device)
+        # 边界值, 筛选出不合法的边界锚框
         valid_mask = ((anchors > self.eps) * (anchors < 1 - self.eps)).all(-1, keepdim=True)
+        # 将锚点从[0,1]转换到对数空间，便于后续回归任务的学习，在损失计算中，inf和nan值会被过滤掉
         anchors = torch.log(anchors / (1 - anchors))
         # anchors = torch.where(valid_mask, anchors, float('inf'))
         # anchors[valid_mask] = torch.inf # valid_mask [1, 8400, 1]
+        # 将边界锚框中无效的标记为inf, 确保后续不会参与计算
         anchors = torch.where(valid_mask, anchors, torch.inf)
 
         return anchors, valid_mask
 
 
     def _get_decoder_input(self,
+                           # 编码器输出
                            memory,
+                           # 特征图的形状
                            spatial_shapes,
+                           # 去噪训练中的类别嵌入
                            denoising_class=None,
+                           # 去噪训练中未激活的边界框
                            denoising_bbox_unact=None):
+        """
+        准备解码器的输入数据：为解码器生成目标特征、参考点、边界框和类别分数
+        """
         bs, _, _ = memory.shape
         # prepare input for decoder
+        # 1.生成参考点，仅在训练时或 eval_spatial_size未设置时生成
         if self.training or self.eval_spatial_size is None:
             anchors, valid_mask = self._generate_anchors(spatial_shapes, device=memory.device)
         else:
             anchors, valid_mask = self.anchors.to(memory.device), self.valid_mask.to(memory.device)
 
         # memory = torch.where(valid_mask, memory, 0)
+        # 将token中边界值也置为0
         memory = valid_mask.to(memory.dtype) * memory  # TODO fix type error for onnx export 
 
         output_memory = self.enc_output(memory)
 
+        # 每个token输出一个classes和bboxes
         enc_outputs_class = self.enc_score_head(output_memory)
-        # 参考点是encoder输出的token + anchors获得的
+        # 参考点是encoder输出的token + anchors获得的, enc_bbox_head 输出的是偏移量offset, 表示相对于锚点的调整值
+        # 直接预测坐标会导致训练不稳定，尤其是目标尺度变化较大时，预测偏移量则可以更好的约束模型的学习范围，使其更容易收敛
         enc_outputs_coord_unact = self.enc_bbox_head(output_memory) + anchors
 
+        # 2. topk query select & 归一化得到 reference_points_unact
+        # 选择出预测可能性最大的topk class index
         _, topk_ind = torch.topk(enc_outputs_class.max(-1).values, self.num_queries, dim=1)
 
         # 参考点 & 归一化
+        # 根据参考点取出对应的值
         reference_points_unact = enc_outputs_coord_unact.gather(dim=1, \
             index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_outputs_coord_unact.shape[-1]))
 
@@ -544,9 +570,11 @@ class RTDETRTransformer(nn.Module):
     def forward(self, feats, targets=None):
 
         # input projection and embedding
+        # 1. 获取编码器的输出
         (memory, spatial_shapes, level_start_index) = self._get_encoder_input(feats)
         
         # prepare denoising training
+        # 2. 生成去噪训练所需的对比样本。
         if self.training and self.num_denoising > 0:
             denoising_class, denoising_bbox_unact, attn_mask, dn_meta = \
                 get_contrastive_denoising_training_group(targets, \
@@ -559,10 +587,11 @@ class RTDETRTransformer(nn.Module):
         else:
             denoising_class, denoising_bbox_unact, attn_mask, dn_meta = None, None, None, None
 
+        # 3. 准备解码器的输出
         target, init_ref_points_unact, enc_topk_bboxes, enc_topk_logits = \
             self._get_decoder_input(memory, spatial_shapes, denoising_class, denoising_bbox_unact)
 
-        # decoder
+        # decoder 4. 解码器
         out_bboxes, out_logits = self.decoder(
             target,
             init_ref_points_unact,

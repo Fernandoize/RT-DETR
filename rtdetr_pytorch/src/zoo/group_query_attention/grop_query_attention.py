@@ -1,11 +1,8 @@
-import math
 from typing import Optional
 
-import torch
 from torch import nn
-from torch.nn import Parameter
-from torch.nn.init import xavier_uniform_
 from torchtune.modules import attention as gqa, KVCache
+
 
 class GroupQueryAttention(nn.Module):
     def __init__(self, *args, embed_dim: int, num_heads: int, num_kv_heads: int,
@@ -47,6 +44,5 @@ class GroupQueryAttention(nn.Module):
         nn.init.xavier_uniform_(self.out_proj.weight)
         nn.init.constant_(self.out_proj.bias, 0)
 
-
-    def forward(self, **kwargs):
-        self.gqa.forward(**kwargs)
+    def forward(self, *args, **kwargs):
+        self.gqa.forward(*args, **kwargs)

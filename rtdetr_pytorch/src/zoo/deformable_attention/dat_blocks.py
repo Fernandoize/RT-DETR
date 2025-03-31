@@ -20,15 +20,18 @@ class LayerNormProxy(nn.Module):
         return einops.rearrange(x, 'b h w c -> b c h w')
 
 class DAttentionBaseline(nn.Module):
-
+    """
+    根据数据动态计算采样位置，然后进行加权
+    """
     def __init__(
-            self, q_size, kv_size, n_heads, n_head_channels, n_groups,
-            attn_drop, proj_drop, stride,
-            offset_range_factor, use_pe, dwc_pe,
-            no_off, fixed_pe, ksize, log_cpb
+            self, q_size, kv_size, n_heads, n_head_channels, n_groups=-1,
+            attn_drop=0.0, proj_drop=0.0, stride=-1,
+            offset_range_factor=1, use_pe=False, dwc_pe=False,
+            no_off=False, fixed_pe=False, ksize = 9, log_cpb=False
     ):
 
         super().__init__()
+        # 是否使用DW卷积作为位置编码
         self.dwc_pe = dwc_pe
         self.n_head_channels = n_head_channels
         self.scale = self.n_head_channels ** -0.5
@@ -40,16 +43,22 @@ class DAttentionBaseline(nn.Module):
         self.n_groups = n_groups
         self.n_group_channels = self.nc // self.n_groups
         self.n_group_heads = self.n_heads // self.n_groups
+        # 是否使用位置编码
         self.use_pe = use_pe
+        # 是否使用固定位置编码
         self.fixed_pe = fixed_pe
+        # 禁用conv_offset的更新，或者采样操作退化为简单的平均池化，主要是用来评估偏移生成对模型性能的影响
         self.no_off = no_off
+        # 控制偏移范围
         self.offset_range_factor = offset_range_factor
         self.ksize = ksize
+        # 是否使用对数坐标偏移编码
         self.log_cpb = log_cpb
         self.stride = stride
         kk = self.ksize
         pad_size = kk // 2 if kk != stride else 0
 
+        # 可形变偏移生成
         self.conv_offset = nn.Sequential(
             nn.Conv2d(self.n_group_channels, self.n_group_channels, kk, stride, pad_size, groups=self.n_group_channels),
             LayerNormProxy(self.n_group_channels),
@@ -60,6 +69,8 @@ class DAttentionBaseline(nn.Module):
             for m in self.conv_offset.parameters():
                 m.requires_grad_(False)
 
+
+        # query, key, value的投影
         self.proj_q = nn.Conv2d(
             self.nc, self.nc,
             kernel_size=1, stride=1, padding=0
@@ -75,14 +86,18 @@ class DAttentionBaseline(nn.Module):
             kernel_size=1, stride=1, padding=0
         )
 
+
+        # 对注意力的输出进行投影，生成最终的特征图
         self.proj_out = nn.Conv2d(
             self.nc, self.nc,
             kernel_size=1, stride=1, padding=0
         )
 
+        # 注意力权重和输出投影的dropout率
         self.proj_drop = nn.Dropout(proj_drop, inplace=True)
         self.attn_drop = nn.Dropout(attn_drop, inplace=True)
 
+        # 是否使用位置编码
         if self.use_pe and not self.no_off:
             if self.dwc_pe:
                 self.rpe_table = nn.Conv2d(
@@ -109,6 +124,9 @@ class DAttentionBaseline(nn.Module):
 
     @torch.no_grad()
     def _get_ref_points(self, H_key, W_key, B, dtype, device):
+        """
+        生成参考点，用于计算偏移
+        """
 
         ref_y, ref_x = torch.meshgrid(
             torch.linspace(0.5, H_key - 0.5, H_key, dtype=dtype, device=device),
@@ -124,7 +142,9 @@ class DAttentionBaseline(nn.Module):
 
     @torch.no_grad()
     def _get_q_grid(self, H, W, B, dtype, device):
-
+        """
+        生成查询网格，用于计算位置编码
+        """
         ref_y, ref_x = torch.meshgrid(
             torch.arange(0, H, dtype=dtype, device=device),
             torch.arange(0, W, dtype=dtype, device=device),
@@ -142,19 +162,23 @@ class DAttentionBaseline(nn.Module):
         B, C, H, W = x.size()
         dtype, device = x.dtype, x.device
 
+        # 1.通过conv_offset生成偏移
         q = self.proj_q(x)
         q_off = einops.rearrange(q, 'b (g c) h w -> (b g) c h w', g=self.n_groups, c=self.n_group_channels)
         offset = self.conv_offset(q_off).contiguous()  # B * g 2 Hg Wg
         Hk, Wk = offset.size(2), offset.size(3)
         n_sample = Hk * Wk
 
+        # 2. offset_range_factor控制偏移范围
         if self.offset_range_factor >= 0 and not self.no_off:
             offset_range = torch.tensor([1.0 / (Hk - 1.0), 1.0 / (Wk - 1.0)], device=device).reshape(1, 2, 1, 1)
             offset = offset.tanh().mul(offset_range).mul(self.offset_range_factor)
 
         offset = einops.rearrange(offset, 'b p h w -> b h w p')
+        # 3. 计算参考点
         reference = self._get_ref_points(Hk, Wk, B, dtype, device)
 
+        # 4. 计算采样位置
         if self.no_off:
             offset = offset.fill_(0.0)
 
@@ -163,6 +187,7 @@ class DAttentionBaseline(nn.Module):
         else:
             pos = (offset + reference).clamp(-1., +1.)
 
+        # 5. 采样
         if self.no_off:
             x_sampled = F.avg_pool2d(x, kernel_size=self.stride, stride=self.stride)
             assert x_sampled.size(2) == Hk and x_sampled.size(3) == Wk, f"Size is {x_sampled.size()}"
@@ -174,6 +199,7 @@ class DAttentionBaseline(nn.Module):
 
         x_sampled = x_sampled.reshape(B, C, 1, n_sample)
 
+        # 6.计算注意力权重
         q = q.reshape(B * self.n_heads, self.n_head_channels, H * W)
         k = self.proj_k(x_sampled).reshape(B * self.n_heads, self.n_head_channels, n_sample)
         v = self.proj_v(x_sampled).reshape(B * self.n_heads, self.n_head_channels, n_sample)
@@ -227,6 +253,41 @@ class DAttentionBaseline(nn.Module):
             out = out + residual_lepe
         out = out.reshape(B, C, H, W)
 
+        # 6. 输出投影
         y = self.proj_drop(self.proj_out(out))
 
+        # 经过注意力处理后的特征图，可形变偏移的位置，参考点
         return y, pos.reshape(B, self.n_groups, Hk, Wk, 2), reference.reshape(B, self.n_groups, Hk, Wk, 2)
+
+
+if __name__ == '__main__':
+    # 定义输入张量
+    batch_size = 1
+    query_length = 100
+    value_length = 1024
+    embed_dim = 256
+    n_levels = 4
+    n_points = 4
+
+    attn = DAttentionBaseline(q_size=(query_length, embed_dim), kv_size=value_length, n_head_channels=32, n_heads=8, n_groups=8)
+    # 查询张量，形状为 (batch_size, query_length, embed_dim)
+    query = torch.randn(batch_size, query_length, embed_dim)
+
+    # 参考点张量，形状为 (batch_size, query_length, n_levels, 2)，范围在 [0, 1] 之间
+    reference_points = torch.rand(batch_size, query_length, n_levels, 2)
+
+    # 值张量，形状为 (batch_size, value_length, embed_dim)
+    value = torch.randn(batch_size, value_length, embed_dim)
+
+    # 每个层级的空间形状，形状为 (n_levels, 2)
+    value_spatial_shapes = torch.tensor([[32, 32], [16, 16], [8, 8], [4, 4]], dtype=torch.long)
+
+    # 标记出有效的value，形状为 (batch_size, value_length)，类型为 bool
+    value_mask = None
+
+    # 计算输出
+    output = attn(query, reference_points, value, value_spatial_shapes, value_mask)
+
+    print(output.shape)
+    # 验证输出形状
+    # Assertions.assertEqual(output.shape, (1, 256, 100))
