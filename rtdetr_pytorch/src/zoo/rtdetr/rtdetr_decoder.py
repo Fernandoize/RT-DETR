@@ -17,6 +17,8 @@ from .utils import deformable_attention_core_func, get_activation, inverse_sigmo
 
 __all__ = ['RTDETRTransformer']
 
+from ..deformable_attention.ms_deformable_attention import MSDeformableAttentionGQA
+
 from ..group_query_attention.grop_query_attention import GroupQueryAttention
 
 
@@ -111,7 +113,7 @@ class MSDeformableAttention(nn.Module):
         value = value.reshape(bs, Len_v, self.num_heads, self.head_dim)
 
         # 使用 query samping offset
-
+        # offset和权重都是由query生成
         # [bs, len, heads, level, points, 2] 2代表x, y两个方向
         # mlp生成
         sampling_offsets = self.sampling_offsets(query).reshape(
@@ -176,7 +178,8 @@ class TransformerDecoderLayer(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
 
         # cross attention
-        self.cross_attn = MSDeformableAttention(d_model, n_head, n_levels, n_points)
+        self.cross_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_kv_head, num_levels=n_levels, num_points=n_points)
+        # self.cross_attn = MSDeformableAttention(d_model, n_head, n_levels, n_points)
         self.dropout2 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
@@ -549,7 +552,7 @@ class RTDETRTransformer(nn.Module):
         if denoising_bbox_unact is not None:
             reference_points_unact = torch.concat(
                 [denoising_bbox_unact, reference_points_unact], 1)
-        
+
         enc_topk_logits = enc_outputs_class.gather(dim=1, \
             index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_outputs_class.shape[-1]))
 
@@ -627,3 +630,5 @@ class RTDETRTransformer(nn.Module):
         # as a dict having both a Tensor and a list.
         return [{'pred_logits': a, 'pred_boxes': b}
                 for a, b in zip(outputs_class, outputs_coord)]
+
+

@@ -1,0 +1,15 @@
+1. baseline 20088164  3个epoch 0.06
+
+# 使用gqa
+2. use gqa n_kv_head = 4 n_head的一半 19989476 3个epoch 0.01
+3. n_dim * 2, 3个epoch 0.027
+4. 添加了resnet第一层输入
+
+
+# query 1200 n_kv_head = 4, 71 epoch 0.250
+
+# query 300 n_kv_head = 4, 71 epoch 0.250
+
+# 打开所有的query
+
+#

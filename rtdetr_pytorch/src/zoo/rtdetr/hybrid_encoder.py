@@ -13,6 +13,7 @@ from src.core import register
 
 __all__ = ['HybridEncoder']
 
+from ..deformable_attention.dat_blocks import DAttentionBaselineGQA
 
 
 class ConvNormLayer(nn.Module):
@@ -127,7 +128,8 @@ class TransformerEncoderLayer(nn.Module):
         super().__init__()
         self.normalize_before = normalize_before
 
-        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
+        self.self_attn = DAttentionBaselineGQA(q_size=(1,1), kv_size=(1,1), n_heads=nhead, n_head_channels=d_model//nhead, n_groups=nhead//2, n_kv_groups=nhead//2)
+        # self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
 
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
