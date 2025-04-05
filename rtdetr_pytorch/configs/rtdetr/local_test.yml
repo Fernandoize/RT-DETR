@@ -9,7 +9,7 @@ __include__: [
 
 num_classes: 5
 remap_mscoco_category: False
-fraction: 0.01
+fraction: 0.1
 
 train_dataloader:
   type: DataLoader
