@@ -228,8 +228,8 @@ class TransformerDecoderLayer(nn.Module):
         tgt = self.norm1(tgt)
 
         # cross attention
-        tgt2 = self.cross_attn(
-            # query
+        tgt2, _ = self.cross_attn(
+            # query 中包含了位置信息
             self.with_pos_embed(tgt, query_pos_embed),
             # 参考点
             reference_points,
@@ -265,26 +265,33 @@ class TransformerDecoder(nn.Module):
                 memory_level_start_index,
                 bbox_head,
                 score_head,
+                quality_head,
                 query_pos_head,
                 attn_mask=None,
                 memory_mask=None):
         output = tgt
         dec_out_bboxes = []
         dec_out_logits = []
+        dec_out_quality = []
         ref_points_detach = F.sigmoid(ref_points_unact)
 
         for i, layer in enumerate(self.layers):
+            # 注意：参考点的位置在不断的更新，因此 query_pos_embed 也在不断编码，其会作为最终的损失
             ref_points_input = ref_points_detach.unsqueeze(2)
+            # 查询的位置编码是通过参考点生成的， dino中 ref_points_detach 先生成了正弦位置编码，然后才计算的embed
             query_pos_embed = query_pos_head(ref_points_detach)
 
+            # query_pos_embed 为query中添加位置信息,
             output = layer(output, ref_points_input, memory,
                            memory_spatial_shapes, memory_level_start_index,
                            attn_mask, memory_mask, query_pos_embed)
 
+            # 这里使用了多层迭代的思想，第一层的输出作为第二层的输入
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
 
             if self.training:
                 dec_out_logits.append(score_head[i](output))
+                dec_out_quality.append(quality_head[i](output))
                 if i == 0:
                     dec_out_bboxes.append(inter_ref_bbox)
                 else:
@@ -293,6 +300,7 @@ class TransformerDecoder(nn.Module):
             elif i == self.eval_idx:
                 dec_out_logits.append(score_head[i](output))
                 dec_out_bboxes.append(inter_ref_bbox)
+                dec_out_quality.append(quality_head[i](output))
                 break
 
             # 保存上一层的参考点
@@ -300,7 +308,7 @@ class TransformerDecoder(nn.Module):
             ref_points_detach = inter_ref_bbox.detach(
             ) if self.training else inter_ref_bbox
 
-        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits)
+        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(dec_out_quality)
 
 
 @register
@@ -353,6 +361,7 @@ class RTDETRTransformer(nn.Module):
 
         # 解码器
         # Transformer module 每层包含自注意力机制和交叉注意力机制
+        # TODO 只在某些层使用DAT
         decoder_layer = TransformerDecoderLayer(hidden_dim, nhead, dim_feedforward, dropout, activation, num_levels, num_decoder_points)
         self.decoder = TransformerDecoder(hidden_dim, decoder_layer, num_decoder_layers, eval_idx)
 
@@ -381,13 +390,19 @@ class RTDETRTransformer(nn.Module):
         )
 
         # 生成类别分数和边界框坐标
+        # TODO 添加一个物体数量预测头，根据预测的数量作为权重保留query
         self.enc_score_head = nn.Linear(hidden_dim, num_classes)
         self.enc_bbox_head = MLP(hidden_dim, hidden_dim, 4, num_layers=3)
+        self.enc_quality_head = nn.Linear(hidden_dim, 1)
 
         # decoder head
         # 解码器的输出：类别分数、边界框坐标
         self.dec_score_head = nn.ModuleList([
             nn.Linear(hidden_dim, num_classes)
+            for _ in range(num_decoder_layers)
+        ])
+        self.dec_quality_head = nn.ModuleList([
+            nn.Linear(hidden_dim, 1)
             for _ in range(num_decoder_layers)
         ])
         self.dec_bbox_head = nn.ModuleList([
@@ -405,11 +420,13 @@ class RTDETRTransformer(nn.Module):
         bias = bias_init_with_prob(0.01)
 
         init.constant_(self.enc_score_head.bias, bias)
+        init.constant_(self.enc_quality_head.bias, bias)
         init.constant_(self.enc_bbox_head.layers[-1].weight, 0)
         init.constant_(self.enc_bbox_head.layers[-1].bias, 0)
 
-        for cls_, reg_ in zip(self.dec_score_head, self.dec_bbox_head):
+        for cls_, reg_, quality_ in zip(self.dec_score_head, self.dec_bbox_head, self.dec_quality_head):
             init.constant_(cls_.bias, bias)
+            init.constant_(quality_.bias, bias)
             init.constant_(reg_.layers[-1].weight, 0)
             init.constant_(reg_.layers[-1].bias, 0)
         
@@ -535,16 +552,21 @@ class RTDETRTransformer(nn.Module):
 
         # 每个token输出一个classes和bboxes
         enc_outputs_class = self.enc_score_head(output_memory)
-        # 参考点是encoder输出的token + anchors获得的, enc_bbox_head 输出的是偏移量offset, 表示相对于锚点的调整值
+        enc_quality_scores = self.enc_quality_head(output_memory)
+        enc_quality_scores = F.sigmoid(enc_quality_scores)
+
+        # 参考点是encoder输出的token    + anchors获得的, enc_bbox_head 输出的是偏移量offset, 表示相对于锚点的调整值
         # 直接预测坐标会导致训练不稳定，尤其是目标尺度变化较大时，预测偏移量则可以更好的约束模型的学习范围，使其更容易收敛
         enc_outputs_coord_unact = self.enc_bbox_head(output_memory) + anchors
 
         # 2. topk query select & 归一化得到 reference_points_unact
         # 选择出预测可能性最大的topk class index
-        _, topk_ind = torch.topk(enc_outputs_class.max(-1).values, self.num_queries, dim=1)
+        combined_scores = enc_outputs_class + 0.0 * enc_quality_scores
+        _, topk_ind = torch.topk(combined_scores.max(-1).values, self.num_queries, dim=1)
 
         # 参考点 & 归一化
         # 根据参考点取出对应的值
+        # TODO
         reference_points_unact = enc_outputs_coord_unact.gather(dim=1, \
             index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_outputs_coord_unact.shape[-1]))
 
@@ -556,7 +578,11 @@ class RTDETRTransformer(nn.Module):
         enc_topk_logits = enc_outputs_class.gather(dim=1, \
             index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_outputs_class.shape[-1]))
 
+        enc_topk_score = enc_quality_scores.gather(dim=1, \
+            index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_quality_scores.shape[-1]))
+
         # extract region features
+        # TODO Topk位置聚合
         if self.learnt_init_query:
             target = self.tgt_embed.weight.unsqueeze(0).tile([bs, 1, 1])
         else:
@@ -567,7 +593,7 @@ class RTDETRTransformer(nn.Module):
         if denoising_class is not None:
             target = torch.concat([denoising_class, target], 1)
 
-        return target, reference_points_unact.detach(), enc_topk_bboxes, enc_topk_logits
+        return target, reference_points_unact.detach(), enc_topk_bboxes, enc_topk_logits, enc_topk_score
 
 
     def forward(self, feats, targets=None):
@@ -591,11 +617,11 @@ class RTDETRTransformer(nn.Module):
             denoising_class, denoising_bbox_unact, attn_mask, dn_meta = None, None, None, None
 
         # 3. 准备解码器的输出
-        target, init_ref_points_unact, enc_topk_bboxes, enc_topk_logits = \
+        target, init_ref_points_unact, enc_topk_bboxes, enc_topk_logits, enc_topk_quality = \
             self._get_decoder_input(memory, spatial_shapes, denoising_class, denoising_bbox_unact)
 
         # decoder 4. 解码器
-        out_bboxes, out_logits = self.decoder(
+        out_bboxes, out_logits, out_quality = self.decoder(
             target,
             init_ref_points_unact,
             memory,
@@ -603,32 +629,34 @@ class RTDETRTransformer(nn.Module):
             level_start_index,
             self.dec_bbox_head,
             self.dec_score_head,
+            self.dec_quality_head,
             self.query_pos_head,
             attn_mask=attn_mask)
 
         if self.training and dn_meta is not None:
             dn_out_bboxes, out_bboxes = torch.split(out_bboxes, dn_meta['dn_num_split'], dim=2)
             dn_out_logits, out_logits = torch.split(out_logits, dn_meta['dn_num_split'], dim=2)
+            dn_out_quality, out_quality = torch.split(out_quality, dn_meta['dn_num_split'], dim=2)
 
-        out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1]}
+        out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1], 'pred_quality': out_quality[-1]}
 
         if self.training and self.aux_loss:
-            out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1])
-            out['aux_outputs'].extend(self._set_aux_loss([enc_topk_logits], [enc_topk_bboxes]))
-            
+            out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1], out_quality[:-1])
+            out['aux_outputs'].extend(self._set_aux_loss([enc_topk_logits], [enc_topk_bboxes], [enc_topk_quality]))
+
             if self.training and dn_meta is not None:
-                out['dn_aux_outputs'] = self._set_aux_loss(dn_out_logits, dn_out_bboxes)
+                out['dn_aux_outputs'] = self._set_aux_loss(dn_out_logits, dn_out_bboxes, dn_out_quality)
                 out['dn_meta'] = dn_meta
 
         return out
 
 
     @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_coord):
+    def _set_aux_loss(self, outputs_class, outputs_coord, outputs_quality):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        return [{'pred_logits': a, 'pred_boxes': b}
-                for a, b in zip(outputs_class, outputs_coord)]
+        return [{'pred_logits': a, 'pred_boxes': b, 'pred_quality': c }
+                for a, b, c in zip(outputs_class, outputs_coord, outputs_quality)]
 
 

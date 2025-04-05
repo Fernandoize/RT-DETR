@@ -144,6 +144,7 @@ class MSDeformableAttentionGQA(nn.Module): # Renamed class
         self.head_dim = embed_dim // num_heads
         self.kv_embed_dim = self.num_kv_heads * self.head_dim # Dimension for K/V projection
 
+        # 主要目的是将embeding压缩到4
         # Sampling offsets and attention weights are derived from the Query, so depend on num_heads
         self.sampling_offsets = nn.Linear(embed_dim, self.total_points * 2)
         self.attention_weights = nn.Linear(embed_dim, self.total_points)
@@ -184,6 +185,9 @@ class MSDeformableAttentionGQA(nn.Module): # Renamed class
         init.constant_(self.output_proj.bias, 0)
 
 
+    # todo 在query中添加位置编码embedding; 四维坐标，并在decoder每一层对齐优化 来自于 DAB-DETR: Dynamic Anchor Boxes are Better Queries for DETR
+    # Mixed Query Selection
+    # Mixed Query Selection： content query, position query, denoise query
     def forward(self,
                 query,              # [bs, query_length, C]
                 reference_points,   # [bs, query_length, n_levels, 2] or [bs, query_length, n_levels, 4]
@@ -265,7 +269,7 @@ class MSDeformableAttentionGQA(nn.Module): # Renamed class
         # Final output projection
         output = self.output_proj(output) # [bs, Len_q, embed_dim]
 
-        return output
+        return output, attention_weights
 
 
 # Example Usage

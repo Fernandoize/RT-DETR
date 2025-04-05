@@ -39,6 +39,7 @@ class HungarianMatcher(nn.Module):
         self.cost_class = weight_dict['cost_class']
         self.cost_bbox = weight_dict['cost_bbox']
         self.cost_giou = weight_dict['cost_giou']
+        self.cost_quality = weight_dict['cost_quality']
 
         self.use_focal_loss = use_focal_loss
         self.alpha = alpha
@@ -72,8 +73,10 @@ class HungarianMatcher(nn.Module):
         # We flatten to compute the cost matrices in a batch
         if self.use_focal_loss:
             out_prob = F.sigmoid(outputs["pred_logits"].flatten(0, 1))
+            out_quality = F.sigmoid(outputs["pred_quality"].flatten(0, 1))
         else:
-            out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)  # [batch_size * num_queries, num_classes]
+            out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)
+            out_quality = F.sigmoid(outputs["pred_quality"].flatten(0, 1))            # [batch_size * num_queries, num_classes]
 
         out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
 
@@ -88,7 +91,7 @@ class HungarianMatcher(nn.Module):
             out_prob = out_prob[:, tgt_ids]
             neg_cost_class = (1 - self.alpha) * (out_prob**self.gamma) * (-(1 - out_prob + 1e-8).log())
             pos_cost_class = self.alpha * ((1 - out_prob)**self.gamma) * (-(out_prob + 1e-8).log())
-            cost_class = pos_cost_class - neg_cost_class        
+            cost_class = pos_cost_class - neg_cost_class
         else:
             cost_class = -out_prob[:, tgt_ids]
 
@@ -97,9 +100,12 @@ class HungarianMatcher(nn.Module):
 
         # Compute the giou cost betwen boxes
         cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox))
-        
+
+        # Compute quality loss
+        cost_quality = out_quality.expand_as(cost_giou) * out_quality # Shape: (num_correct_samples, 1)
+
         # Final cost matrix
-        C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
+        C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou + self.cost_quality * cost_quality
         C = C.view(bs, num_queries, -1).cpu()
 
         sizes = [len(v["boxes"]) for v in targets]

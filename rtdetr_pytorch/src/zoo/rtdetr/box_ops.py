@@ -46,16 +46,21 @@ def generalized_box_iou(boxes1, boxes2):
 
     Returns a [N, M] pairwise matrix, where N = len(boxes1)
     and M = len(boxes2)
+
+    基于IOU的改进：考虑了预测框和真实框之间的最小闭包区域
     """
     # degenerate boxes gives inf / nan results
     # so do an early check
     assert (boxes1[:, 2:] >= boxes1[:, :2]).all()
     assert (boxes2[:, 2:] >= boxes2[:, :2]).all()
+    # 1. 计算IOU 和 并集面积
     iou, union = box_iou(boxes1, boxes2)
 
+    # 2. 计算最小闭包区域
     lt = torch.min(boxes1[:, None, :2], boxes2[:, :2])
     rb = torch.max(boxes1[:, None, 2:], boxes2[:, 2:])
 
+    # 3. 计算GIOU
     wh = (rb - lt).clamp(min=0)  # [N,M,2]
     area = wh[:, :, 0] * wh[:, :, 1]
 

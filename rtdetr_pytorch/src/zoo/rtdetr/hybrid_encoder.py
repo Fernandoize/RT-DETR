@@ -13,7 +13,8 @@ from src.core import register
 
 __all__ = ['HybridEncoder']
 
-from ..deformable_attention.dat_blocks import DAttentionBaselineGQA
+from ..deformable_attention.encoder.dat_blocks import DeformableMHAGQA
+from ..deformable_attention.ms_deformable_attention import MSDeformableAttentionGQA
 
 
 class ConvNormLayer(nn.Module):
@@ -120,15 +121,21 @@ class CSPRepLayer(nn.Module):
 class TransformerEncoderLayer(nn.Module):
     def __init__(self,
                  d_model,
-                 nhead,
+                 n_head,
                  dim_feedforward=2048,
                  dropout=0.1,
                  activation="relu",
-                 normalize_before=False):
+                 normalize_before=False,
+                 deformable_encoder=False):
         super().__init__()
         self.normalize_before = normalize_before
+        self.deformable_encoder = deformable_encoder
 
-        self.self_attn = DAttentionBaselineGQA(q_size=(1,1), kv_size=(1,1), n_heads=nhead, n_head_channels=d_model//nhead, n_groups=nhead//2, n_kv_groups=nhead//2)
+        if self.deformable_encoder:
+            self.self_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_head, num_levels=1, num_points=4)
+        else:
+            self.self_attn = nn.MultiheadAttention(d_model, n_head, dropout, batch_first=True)
+        # self.self_attn = DeformableMHAGQA(embed_dim=d_model, num_heads=nhead, num_kv_heads=nhead//4)
         # self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
 
         self.linear1 = nn.Linear(d_model, dim_feedforward)
@@ -145,13 +152,16 @@ class TransformerEncoderLayer(nn.Module):
     def with_pos_embed(tensor, pos_embed):
         return tensor if pos_embed is None else tensor + pos_embed
 
-    def forward(self, src, src_mask=None, pos_embed=None) -> torch.Tensor:
+    def forward(self, src, src_mask=None, pos_embed=None, reference_points=None, spatial_shapes:torch.Tensor = None) -> torch.Tensor:
         residual = src
+
         if self.normalize_before:
             src = self.norm1(src)
         q = k = self.with_pos_embed(src, pos_embed)
-        src, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
-
+        if self.deformable_encoder:
+            src, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
+        else:
+            src, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
         src = residual + self.dropout1(src)
         if not self.normalize_before:
             src = self.norm1(src)
@@ -167,16 +177,42 @@ class TransformerEncoderLayer(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, encoder_layer, num_layers, norm=None):
+    def __init__(self, encoder_layer, num_layers, norm=None, deformable_encoder=False):
         super(TransformerEncoder, self).__init__()
         self.layers = nn.ModuleList([copy.deepcopy(encoder_layer) for _ in range(num_layers)])
         self.num_layers = num_layers
         self.norm = norm
+        self.deformable_encoder = deformable_encoder
 
-    def forward(self, src, src_mask=None, pos_embed=None) -> torch.Tensor:
+    @staticmethod
+    def get_reference_points(spatial_shapes, device):
+        reference_points_list = []
+        for lvl, (H_, W_) in enumerate(spatial_shapes):
+
+            ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
+                                          torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
+            ref_y = ref_y.reshape(-1)[None]
+                     # / (valid_ratios[:, None, lvl, 1] * H_))
+            ref_x = ref_x.reshape(-1)[None]
+                    # / (valid_ratios[:, None, lvl, 0] * W_)
+            ref = torch.stack((ref_x, ref_y), -1)
+            reference_points_list.append(ref)
+        reference_points = torch.cat(reference_points_list, 2)
+        reference_points = reference_points[:, :, None]
+                            # * valid_ratios[:, None])
+        return reference_points
+
+    def forward(self, src, src_mask=None, pos_embed=None, spatial_shapes:torch.Tensor = None) -> torch.Tensor:
         output = src
+
+        # preparation and reshape
+        reference_points = None
+        if self.num_layers > 0:
+            if self.deformable_encoder:
+                reference_points = self.get_reference_points(spatial_shapes, device=src.device)
+
         for layer in self.layers:
-            output = layer(output, src_mask=src_mask, pos_embed=pos_embed)
+            output = layer(output, src_mask=src_mask, pos_embed=pos_embed, reference_points=reference_points, spatial_shapes=spatial_shapes)
 
         if self.norm is not None:
             output = self.norm(output)
@@ -202,7 +238,7 @@ class HybridEncoder(nn.Module):
                  # Transformer 中的激活函数（如 GELU
                  enc_act='gelu',
                  # 指定哪些层级的特征图需要经过 Transformer 编码器处理
-                 use_encoder_idx=[2],
+                 use_encoder_idx=[1,2,3],
                  # 每个 Transformer 编码器的层数
                  num_encoder_layers=1,
                  # 位置编码的温度参数，用于控制位置编码的频率
@@ -213,7 +249,10 @@ class HybridEncoder(nn.Module):
                  # 卷积层中的激活函数（如 SiLU
                  act='silu',
                  # 评估时输入图像的固定空间尺寸
-                 eval_spatial_size=None):
+                 eval_spatial_size=None,
+                 # 是否使用deformable_encoder
+                 deformable_encoder=False,
+                 ):
         super().__init__()
         self.in_channels = in_channels
         self.feat_strides = feat_strides
@@ -222,6 +261,7 @@ class HybridEncoder(nn.Module):
         self.num_encoder_layers = num_encoder_layers
         self.pe_temperature = pe_temperature
         self.eval_spatial_size = eval_spatial_size
+        self.deformable_encoder = deformable_encoder
 
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
@@ -242,16 +282,20 @@ class HybridEncoder(nn.Module):
         # 对指定的层级（use_encoder_idx）应用 Transformer 编码器。
         # 将特征图展平为 [B, H*W, C] 的形状，添加位置编码后输入 Transformer。
         # 将 Transformer 的输出恢复为 [B, C, H, W] 的形状。
-        encoder_layer = TransformerEncoderLayer(
-            hidden_dim, 
-            nhead=nhead,
-            dim_feedforward=dim_feedforward, 
-            dropout=dropout,
-            activation=enc_act)
 
-        self.encoder = nn.ModuleList([
-            TransformerEncoder(copy.deepcopy(encoder_layer), num_encoder_layers) for _ in range(len(use_encoder_idx))
-        ])
+        self.encoder = nn.ModuleList([])
+        for _ in range(len(use_encoder_idx)):
+            encoder_layer = TransformerEncoderLayer(
+                hidden_dim,
+                n_head=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                activation=enc_act,
+                deformable_encoder=deformable_encoder)
+            self.encoder.append(TransformerEncoder(encoder_layer, num_encoder_layers, deformable_encoder=deformable_encoder))
+
+
+        # self.encoder = TransformerEncoder(copy.deepcopy(encoder_layer), num_encoder_layers, deformable_encoder=deformable_encoder)
 
         # top-down fpn
         # 从高层级到低层级，通过上采样和特征融合逐步生成金字塔特征
@@ -314,6 +358,7 @@ class HybridEncoder(nn.Module):
         if self.num_encoder_layers > 0:
             for i, enc_ind in enumerate(self.use_encoder_idx):
                 h, w = proj_feats[enc_ind].shape[2:]
+                spatial_shapes = [(h, w)]
                 # flatten [B, C, H, W] to [B, HxW, C]
                 src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
                 if self.training or self.eval_spatial_size is None:
@@ -321,8 +366,7 @@ class HybridEncoder(nn.Module):
                         w, h, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
                 else:
                     pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src_flatten.device)
-
-                memory = self.encoder[i](src_flatten, pos_embed=pos_embed)
+                memory = self.encoder[i](src_flatten, pos_embed=pos_embed, spatial_shapes=spatial_shapes)
                 proj_feats[enc_ind] = memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()
                 # print([x.is_contiguous() for x in proj_feats ])
 

@@ -11,49 +11,71 @@ from .box_ops import box_cxcywh_to_xyxy, box_xyxy_to_cxcywh
 def get_contrastive_denoising_training_group(targets,
                                              num_classes,
                                              num_queries,
+                                             # 类别嵌入
                                              class_embed,
                                              num_denoising=100,
+                                             # 标签噪声比例
                                              label_noise_ratio=0.5,
+                                             # 边界框噪声比例
                                              box_noise_scale=1.0,):
-    """cnd 生成去噪训练用的对比样本"""
+    """
+        cnd 生成去噪训练用的对比样本
+        1. 通过引入噪声样本和正负样本对，增强模型的鲁棒性, 帮助模型区分真实目标和噪声目标, 主要是根据输入的目标标签和边界框，生成一组包含噪声的查询
+    """
     if num_denoising <= 0:
         return None, None, None, None
 
     num_gts = [len(t['labels']) for t in targets]
     device = targets[0]['labels'].device
-    
+
+    # 1. 最大的目标数
     max_gt_num = max(num_gts)
     if max_gt_num == 0:
         return None, None, None, None
 
+    # 2. 分组
     num_group = num_denoising // max_gt_num
     num_group = 1 if num_group == 0 else num_group
     # pad gt to max_num of a batch
     bs = len(num_gts)
 
+    # 3. 创建一个query class的向量 (bs, max_gt_num) 存储类别标签，初始值为无效类别
     input_query_class = torch.full([bs, max_gt_num], num_classes, dtype=torch.int32, device=device)
+    # 4. 创建一个query bbox的向量 (bs, max_gt_num, 4) 存储边界框 初始值为零。
     input_query_bbox = torch.zeros([bs, max_gt_num, 4], device=device)
+    # 5. 存储掩码信息，标记哪些位置是有效的 初始值为 False
     pad_gt_mask = torch.zeros([bs, max_gt_num], dtype=torch.bool, device=device)
 
     for i in range(bs):
         num_gt = num_gts[i]
+        # 6. 保存真实的标签和边界框
         if num_gt > 0:
             input_query_class[i, :num_gt] = targets[i]['labels']
             input_query_bbox[i, :num_gt] = targets[i]['boxes']
             pad_gt_mask[i, :num_gt] = 1
+
+    # 6. 生成正负样本对，验者第二个维度重复2 * num_group次
     # each group has positive and negative queries.
     input_query_class = input_query_class.tile([1, 2 * num_group])
     input_query_bbox = input_query_bbox.tile([1, 2 * num_group, 1])
     pad_gt_mask = pad_gt_mask.tile([1, 2 * num_group])
+
+    # 7. 负样本掩码生成，标记哪些位置是负样本
     # positive and negative mask
     negative_gt_mask = torch.zeros([bs, max_gt_num * 2, 1], device=device)
     negative_gt_mask[:, max_gt_num:] = 1
     negative_gt_mask = negative_gt_mask.tile([1, num_group, 1])
+
+    # 8. 正样本掩码生成， 通过取反负样本掩码，生成正样本掩码。
     positive_gt_mask = 1 - negative_gt_mask
+
+    # 9. 正样本索引的提取，并按照批次分割
     # contrastive denoising training positive index
     positive_gt_mask = positive_gt_mask.squeeze(-1) * pad_gt_mask
     dn_positive_idx = torch.nonzero(positive_gt_mask)[:, 1]
     dn_positive_idx = torch.split(dn_positive_idx, [n * num_group for n in num_gts])
+
+    # 10.总的去噪查询数
     # total denoising queries
     num_denoising = int(max_gt_num * 2 * num_group)
 

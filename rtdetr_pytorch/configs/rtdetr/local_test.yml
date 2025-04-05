@@ -73,14 +73,14 @@ HybridEncoder:
   in_channels: [128, 256, 512]
   hidden_dim: 256
   expansion: 0.5
+  deformable_encoder: False
 
 
 RTDETRTransformer:
   eval_idx: -1
   num_decoder_layers: 3
   num_denoising: 100
-
-
+  learnt_init_query: False
 
 optimizer:
   type: AdamW
@@ -100,3 +100,15 @@ optimizer:
   betas: [0.9, 0.999]
   weight_decay: 0.0001
 
+SetCriterion:
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2, loss_quality: 0}
+  losses: ['vfl', 'boxes', 'quality']
+  alpha: 0.75
+  gamma: 2.0
+
+  matcher:
+    type: HungarianMatcher
+    weight_dict: { cost_class: 2, cost_bbox: 5, cost_giou: 2, cost_quality: 0}
+    # use_focal_loss: True
+    alpha: 0.25
+    gamma: 2.0

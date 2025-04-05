@@ -6,10 +6,34 @@
 4. 添加了resnet第一层输入
 
 
-# query 1200 n_kv_head = 4, 71 epoch 0.250
+# query 1200 n_kv_head = 4, 71 epoch 0.250 done
 
-# query 300 n_kv_head = 4, 71 epoch 0.250
+# query 300 n_kv_head = 4, 71 epoch 0.250 done
 
-# 打开所有的query
+# encoder换成了deformable 71 epoch 0.229 训练时间从30分钟减少到23分钟，减少了23%
 
-#
+# 使用多层特征输入到transformer
+
+# 对query 进行对齐，content query, pos query等
+
+
+04-02
+
+# 尝试了直接使用0层的特征作为transformer encoder输入发现效果不好
+
+# 尝试使用多层
+
+
+----
+
+混合策略 (Hybrid Strategies):
+
+结合多种方法。例如，一部分参考点来自 Top-K，另一部分来自固定的稀疏网格以保证覆盖性，还有一部分是可学习的。
+
+优点： 可能取长补短。
+
+缺点： 设计和调优更复杂。
+
+04-05
+* 使用loss_quality: 0.263 23分钟
+* 使用deformable_encoder:

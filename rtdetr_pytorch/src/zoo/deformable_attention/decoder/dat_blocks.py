@@ -19,7 +19,7 @@ class LayerNormProxy(nn.Module):
         return einops.rearrange(x, 'b h w c -> b c h w')
 
 
-class DAttentionBaselineGQA(nn.Module): # Renamed class for clarity
+class DeformableMHAGQAWithRPE(nn.Module): # Renamed class for clarity
     """
     根据数据动态计算采样位置，然后进行加权 (加入GQA特性)
     """
