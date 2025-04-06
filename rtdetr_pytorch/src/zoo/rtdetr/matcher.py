@@ -105,7 +105,7 @@ class HungarianMatcher(nn.Module):
         cost_quality = out_quality.expand_as(cost_giou) * out_quality # Shape: (num_correct_samples, 1)
 
         # Final cost matrix
-        C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou + self.cost_quality * cost_quality
+        C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
         C = C.view(bs, num_queries, -1).cpu()
 
         sizes = [len(v["boxes"]) for v in targets]

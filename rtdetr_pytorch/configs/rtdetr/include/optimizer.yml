@@ -7,7 +7,7 @@ ema:
 
 
 find_unused_parameters: True 
-
+checkpoint_step: 5
 epoches: 72
 clip_max_norm: 0.1
 

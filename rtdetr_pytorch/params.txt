@@ -37,3 +37,22 @@
 04-05
 * 使用loss_quality: 0.263 23分钟
 * 使用deformable_encoder:
+
+04-06
+* 使用deformable 基本不掉点，使用encoder gqa = 4，掉点4% 47%
+* 使用quality head 基本不涨点
+* 使用decoder gqa = 4
+
+----
+* 使用gate融合m kv_head = 4 涨点 53%
+* 尝试使用bottleneck gate, decoder也使用kv_head
+* FFN改为DW卷积
+
+----
+使用MobileNet替换resnet18
+FPN融合进入Deformble Encoder
+----
+动态query个数 不太行，效果不好
+----
+04.07
+FPN融合： 尝试ASPP 动态融合

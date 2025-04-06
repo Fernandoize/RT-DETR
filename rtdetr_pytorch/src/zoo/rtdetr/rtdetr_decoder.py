@@ -183,6 +183,11 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout2 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
+        # gate
+        # 门控机制gate来控制信息流 于控制自注意力和交叉注意力输出之间的信息流
+        self.gateway = BottleneckGate(d_model)
+        self.gateway2 = BottleneckGate(d_model)
+
         # ffn
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.activation = getattr(F, activation)
@@ -234,16 +239,21 @@ class TransformerDecoderLayer(nn.Module):
             # 参考点
             reference_points,
             # k,v token
-            memory, 
-            memory_spatial_shapes, 
+            memory,
+            memory_spatial_shapes,
             memory_mask)
-        tgt = tgt + self.dropout2(tgt2)
-        tgt = self.norm2(tgt)
+
+        # 通过门控机制 gateway 控制自注意力和交叉注意力输出之间的信息流。
+        tgt = self.gateway(tgt, self.dropout2(tgt2))
+        # tgt = tgt + self.dropout2(tgt2)
+        # tgt = self.norm2(tgt)
 
         # ffn
         tgt2 = self.forward_ffn(tgt)
-        tgt = tgt + self.dropout4(tgt2)
-        tgt = self.norm3(tgt)
+
+        tgt = self.gateway2(tgt, self.dropout4(tgt2))
+        # tgt = tgt + self.dropout4(tgt2)
+        # tgt = self.norm3(tgt)
 
         return tgt
 
@@ -334,7 +344,7 @@ class RTDETRTransformer(nn.Module):
                  learnt_init_query=False,
                  eval_spatial_size=None,
                  eval_idx=-1,
-                 eps=1e-2, 
+                 eps=1e-2,
                  aux_loss=True):
 
         super(RTDETRTransformer, self).__init__()
@@ -351,6 +361,7 @@ class RTDETRTransformer(nn.Module):
         self.num_levels = num_levels
         self.num_classes = num_classes
         self.num_queries = num_queries
+        # self.query_count = 0
         self.eps = eps
         self.num_decoder_layers = num_decoder_layers
         self.eval_spatial_size = eval_spatial_size
@@ -371,7 +382,7 @@ class RTDETRTransformer(nn.Module):
 
         # 用于去噪训练中的类别嵌入
         # denoising part
-        if num_denoising > 0: 
+        if num_denoising > 0:
             # self.denoising_class_embed = nn.Embedding(num_classes, hidden_dim, padding_idx=num_classes-1) # TODO for load paddle weights
             self.denoising_class_embed = nn.Embedding(num_classes+1, hidden_dim, padding_idx=num_classes)
 
@@ -396,7 +407,7 @@ class RTDETRTransformer(nn.Module):
         self.enc_quality_head = nn.Linear(hidden_dim, 1)
 
         # decoder head
-        # 解码器的输出：类别分数、边界框坐标
+        # 解码器的输出：类别分数、边界框坐标、边界框质量
         self.dec_score_head = nn.ModuleList([
             nn.Linear(hidden_dim, num_classes)
             for _ in range(num_decoder_layers)
@@ -424,12 +435,12 @@ class RTDETRTransformer(nn.Module):
         init.constant_(self.enc_bbox_head.layers[-1].weight, 0)
         init.constant_(self.enc_bbox_head.layers[-1].bias, 0)
 
-        for cls_, reg_, quality_ in zip(self.dec_score_head, self.dec_bbox_head, self.dec_quality_head):
+        for cls_, reg_, quality_ in zip(self.dec_score_head, self.dec_bbox_head,
+                                                      self.dec_quality_head):
             init.constant_(cls_.bias, bias)
             init.constant_(quality_.bias, bias)
             init.constant_(reg_.layers[-1].weight, 0)
             init.constant_(reg_.layers[-1].bias, 0)
-        
         # linear_init_(self.enc_output[0])
         init.xavier_uniform_(self.enc_output[0].weight)
         if self.learnt_init_query:
@@ -443,7 +454,7 @@ class RTDETRTransformer(nn.Module):
         for in_channels in feat_channels:
             self.input_proj.append(
                 nn.Sequential(OrderedDict([
-                    ('conv', nn.Conv2d(in_channels, self.hidden_dim, 1, bias=False)), 
+                    ('conv', nn.Conv2d(in_channels, self.hidden_dim, 1, bias=False)),
                     ('norm', nn.BatchNorm2d(self.hidden_dim,))])
                 )
             )
@@ -523,8 +534,8 @@ class RTDETRTransformer(nn.Module):
 
         return anchors, valid_mask
 
-
     def _get_decoder_input(self,
+                           targets,
                            # 编码器输出
                            memory,
                            # 特征图的形状
@@ -546,14 +557,13 @@ class RTDETRTransformer(nn.Module):
 
         # memory = torch.where(valid_mask, memory, 0)
         # 将token中边界值也置为0
-        memory = valid_mask.to(memory.dtype) * memory  # TODO fix type error for onnx export 
+        memory = valid_mask.to(memory.dtype) * memory  # TODO fix type error for onnx export
 
         output_memory = self.enc_output(memory)
 
         # 每个token输出一个classes和bboxes
         enc_outputs_class = self.enc_score_head(output_memory)
         enc_quality_scores = self.enc_quality_head(output_memory)
-        enc_quality_scores = F.sigmoid(enc_quality_scores)
 
         # 参考点是encoder输出的token    + anchors获得的, enc_bbox_head 输出的是偏移量offset, 表示相对于锚点的调整值
         # 直接预测坐标会导致训练不稳定，尤其是目标尺度变化较大时，预测偏移量则可以更好的约束模型的学习范围，使其更容易收敛
@@ -601,17 +611,17 @@ class RTDETRTransformer(nn.Module):
         # input projection and embedding
         # 1. 获取编码器的输出
         (memory, spatial_shapes, level_start_index) = self._get_encoder_input(feats)
-        
+
         # prepare denoising training
         # 2. 生成去噪训练所需的对比样本。
         if self.training and self.num_denoising > 0:
             denoising_class, denoising_bbox_unact, attn_mask, dn_meta = \
                 get_contrastive_denoising_training_group(targets, \
-                    self.num_classes, 
-                    self.num_queries, 
-                    self.denoising_class_embed, 
-                    num_denoising=self.num_denoising, 
-                    label_noise_ratio=self.label_noise_ratio, 
+                    self.num_classes,
+                    self.num_queries,
+                    self.denoising_class_embed,
+                    num_denoising=self.num_denoising,
+                    label_noise_ratio=self.label_noise_ratio,
                     box_noise_scale=self.box_noise_scale, )
         else:
             denoising_class, denoising_bbox_unact, attn_mask, dn_meta = None, None, None, None
@@ -660,3 +670,66 @@ class RTDETRTransformer(nn.Module):
                 for a, b, c in zip(outputs_class, outputs_coord, outputs_quality)]
 
 
+class Gate(nn.Module):
+    """
+    门控机制，用于控制两个输入张量之间的信息流，门控机制可以动态的融合来自不同源的信息
+    """
+    def __init__(self, d_model):
+        super(Gate, self).__init__()
+        # d_model：模型的隐藏维度，即输入张量 x1 和 x2 的维度。
+        self.gate = nn.Linear(2 * d_model, 2 * d_model)
+        # 初始化偏置，使得初始门控信号接近0.5
+        bias = bias_init_with_prob(0.5)
+        init.constant_(self.gate.bias, bias)
+        # 将线性层的权重初始化为0，确保初始门控信号主要由偏置决定。
+        init.constant_(self.gate.weight, 0)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x1, x2):
+        # (B, L, 2 * d_modle)
+        gate_input = torch.cat([x1, x2], dim=-1)
+        # 通过线性层 self.gate 处理 gate_input，生成门控信号, 使用Sigmoid激活函数将门控信号归一化到 [0, 1] 范围内。
+        gates = torch.sigmoid(self.gate(gate_input))
+        # 将门控信号 gates 拆分为两个部分 gate1 和 gate2，每个部分的形状为 (B, L, d_model)。
+        gate1, gate2 = gates.chunk(2, dim=-1)
+        # 通过层归一化 self.norm 对加权和结果进行归一化，稳定训练过程
+        return self.norm(gate1 * x1 + gate2 * x2)
+
+
+class BottleneckGate(nn.Module):
+    """
+    优化门控机制 V2：使用瓶颈结构计算单一门控信号。
+    先将维度降低，再恢复，进一步减少参数。
+    融合方式仍为 g * x1 + (1 - g) * x2。
+    """
+    def __init__(self, d_model, bottleneck_ratio=0.25): # bottleneck_ratio 控制压缩比例
+        super().__init__()
+        bottleneck_dim = int(d_model * bottleneck_ratio)
+        if bottleneck_dim < 1: # 保证瓶颈维度至少为1
+            bottleneck_dim = 1
+
+        # 第一个线性层：降维 (2*d_model -> bottleneck_dim)
+        self.linear1 = nn.Linear(2 * d_model, bottleneck_dim)
+        self.activation = nn.GELU() # 或 ReLU
+        # 第二个线性层：升维 (bottleneck_dim -> d_model)
+        self.linear2 = nn.Linear(bottleneck_dim, d_model)
+
+        # 初始化第二个线性层的偏置，使得初始门控 g 接近 0.5
+        bias = bias_init_with_prob(0.5)
+        init.constant_(self.linear2.bias, bias)
+        # 权重初始化为0
+        init.constant_(self.linear1.weight, 0)
+        init.constant_(self.linear2.weight, 0) # 关键：第二个线性层权重也初始化为0
+
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x1, x2):
+        # 拼接输入: (B, L, 2 * d_model)
+        gate_input = torch.cat([x1, x2], dim=-1)
+        # 通过瓶颈结构计算门控信号
+        hidden = self.activation(self.linear1(gate_input))
+        g = torch.sigmoid(self.linear2(hidden)) # (B, L, d_model)
+        # 融合
+        fused_output = g * x1 + (1 - g) * x2
+        # 层归一化
+        return self.norm(fused_output)

@@ -202,6 +202,7 @@ class SetCriterion(nn.Module):
 
     def loss_quality(self, outputs, targets, indices, num_boxes):
         assert 'pred_boxes' in outputs
+        assert 'pred_quality' in outputs
         idx = self._get_src_permutation_idx(indices)
 
         src_boxes = outputs['pred_boxes'][idx]
