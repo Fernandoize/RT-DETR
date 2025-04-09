@@ -2,10 +2,11 @@
 '''
 
 import copy
-import torch 
-import torch.nn as nn 
-import torch.nn.functional as F 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
+from .rtdetr_decoder import BottleneckGate, MSDeformableAttention
 from .utils import get_activation
 
 from src.core import register
@@ -21,27 +22,30 @@ class ConvNormLayer(nn.Module):
     def __init__(self, ch_in, ch_out, kernel_size, stride, padding=None, bias=False, act=None):
         super().__init__()
         self.conv = nn.Conv2d(
-            ch_in, 
-            ch_out, 
-            kernel_size, 
-            stride, 
-            padding=(kernel_size-1)//2 if padding is None else padding, 
+            ch_in,
+            ch_out,
+            kernel_size,
+            stride,
+            padding=(kernel_size-1)//2 if padding is None else padding,
             bias=bias)
         self.norm = nn.BatchNorm2d(ch_out)
-        self.act = nn.Identity() if act is None else get_activation(act) 
+        self.act = nn.Identity() if act is None else get_activation(act)
 
     def forward(self, x):
         return self.act(self.norm(self.conv(x)))
 
 
 class RepVggBlock(nn.Module):
+    """
+    ReceptionVGG: 使用多个不同尺度的卷积核进行并行特征提取，然后再做加法
+    """
     def __init__(self, ch_in, ch_out, act='relu'):
         super().__init__()
         self.ch_in = ch_in
         self.ch_out = ch_out
         self.conv1 = ConvNormLayer(ch_in, ch_out, 3, 1, padding=1, act=None)
         self.conv2 = ConvNormLayer(ch_in, ch_out, 1, 1, padding=0, act=None)
-        self.act = nn.Identity() if act is None else get_activation(act) 
+        self.act = nn.Identity() if act is None else get_activation(act)
 
     def forward(self, x):
         if hasattr(self, 'conv'):
@@ -57,14 +61,14 @@ class RepVggBlock(nn.Module):
 
         kernel, bias = self.get_equivalent_kernel_bias()
         self.conv.weight.data = kernel
-        self.conv.bias.data = bias 
+        self.conv.bias.data = bias
         # self.__delattr__('conv1')
         # self.__delattr__('conv2')
 
     def get_equivalent_kernel_bias(self):
         kernel3x3, bias3x3 = self._fuse_bn_tensor(self.conv1)
         kernel1x1, bias1x1 = self._fuse_bn_tensor(self.conv2)
-        
+
         return kernel3x3 + self._pad_1x1_to_3x3_tensor(kernel1x1), bias3x3 + bias1x1
 
     def _pad_1x1_to_3x3_tensor(self, kernel1x1):
@@ -90,21 +94,35 @@ class RepVggBlock(nn.Module):
 class CSPRepLayer(nn.Module):
     """
     Cross Stage Partial 结合了 RepVggBlock 来实现高效的卷积操作
+
+    Cross Stage Partial (CSP) 是一种卷积神经网络架构设计，旨在提高特征提取的效率和性能。
+    CSP 结构的核心思想是将特征图分成两部分，并在不同阶段进行交叉融合，从而增强特征的多样性并减少计算量。
+    expansion = 0.5 代表将特征拆分为多个部分, 然后经过不同的操作，一个分支进行卷积特征提取，另一个保持不变，最后进行融合
+
+    1. 降低了复杂度，同时保持特征的丰富性
+    2. 广泛应用于YOLO系列中
     """
     def __init__(self,
+                 # 输入输出通道
                  in_channels,
                  out_channels,
+                 # regvgg block数3
                  num_blocks=3,
+                 # 扩展因子 1.0
                  expansion=1.0,
                  bias=None,
                  act="silu"):
         super(CSPRepLayer, self).__init__()
+
+        # 1. 特征拆分，一般拆分为两部分
         hidden_channels = int(out_channels * expansion)
         self.conv1 = ConvNormLayer(in_channels, hidden_channels, 1, 1, bias=bias, act=act)
         self.conv2 = ConvNormLayer(in_channels, hidden_channels, 1, 1, bias=bias, act=act)
+        # 2. 多个rep vgg block进行特征提取
         self.bottlenecks = nn.Sequential(*[
             RepVggBlock(hidden_channels, hidden_channels, act=act) for _ in range(num_blocks)
         ])
+        # 3. 特征融合
         if hidden_channels != out_channels:
             self.conv3 = ConvNormLayer(hidden_channels, out_channels, 1, 1, bias=bias, act=act)
         else:
@@ -132,11 +150,9 @@ class TransformerEncoderLayer(nn.Module):
         self.deformable_encoder = deformable_encoder
 
         if self.deformable_encoder:
-            self.self_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_head, num_levels=1, num_points=4)
+            self.self_attn = MSDeformableAttention(d_model, n_head, num_levels=1, num_points=8)
         else:
             self.self_attn = nn.MultiheadAttention(d_model, n_head, dropout, batch_first=True)
-        # self.self_attn = DeformableMHAGQA(embed_dim=d_model, num_heads=nhead, num_kv_heads=nhead//4)
-        # self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
 
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
@@ -146,7 +162,7 @@ class TransformerEncoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
-        self.activation = get_activation(activation) 
+        self.activation = get_activation(activation)
 
     @staticmethod
     def with_pos_embed(tensor, pos_embed):
@@ -265,6 +281,7 @@ class HybridEncoder(nn.Module):
 
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
+        # self.gate = BottleneckGate()
 
         # channel projection
         # 使用 input_proj 将每个特征图投影到统一的 hidden_dim 维度

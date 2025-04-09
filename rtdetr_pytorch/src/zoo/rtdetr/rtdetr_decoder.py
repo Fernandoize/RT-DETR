@@ -178,15 +178,15 @@ class TransformerDecoderLayer(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
 
         # cross attention
-        self.cross_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_kv_head, num_levels=n_levels, num_points=n_points)
-        # self.cross_attn = MSDeformableAttention(d_model, n_head, n_levels, n_points)
+        # self.cross_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_kv_head, num_levels=n_levels, num_points=n_points)
+        self.cross_attn = MSDeformableAttention(d_model, n_head, n_levels, n_points)
         self.dropout2 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
         # gate
         # 门控机制gate来控制信息流 于控制自注意力和交叉注意力输出之间的信息流
-        self.gateway = BottleneckGate(d_model)
-        self.gateway2 = BottleneckGate(d_model)
+        # self.gateway = BottleneckGate(d_model)
+        # self.gateway2 = BottleneckGate(d_model)
 
         # ffn
         self.linear1 = nn.Linear(d_model, dim_feedforward)
@@ -244,16 +244,16 @@ class TransformerDecoderLayer(nn.Module):
             memory_mask)
 
         # 通过门控机制 gateway 控制自注意力和交叉注意力输出之间的信息流。
-        tgt = self.gateway(tgt, self.dropout2(tgt2))
-        # tgt = tgt + self.dropout2(tgt2)
-        # tgt = self.norm2(tgt)
+        # tgt = self.gateway(tgt, self.dropout2(tgt2))
+        tgt = tgt + self.dropout2(tgt2)
+        tgt = self.norm2(tgt)
 
         # ffn
         tgt2 = self.forward_ffn(tgt)
 
-        tgt = self.gateway2(tgt, self.dropout4(tgt2))
-        # tgt = tgt + self.dropout4(tgt2)
-        # tgt = self.norm3(tgt)
+        # tgt = self.gateway2(tgt, self.dropout4(tgt2))
+        tgt = tgt + self.dropout4(tgt2)
+        tgt = self.norm3(tgt)
 
         return tgt
 
@@ -535,7 +535,6 @@ class RTDETRTransformer(nn.Module):
         return anchors, valid_mask
 
     def _get_decoder_input(self,
-                           targets,
                            # 编码器输出
                            memory,
                            # 特征图的形状

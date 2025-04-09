@@ -161,9 +161,9 @@ def main(args, ):
         predictions = []
         for i, slice_img in enumerate(slices):
             slice_tensor = transforms(slice_img)[None].to(args.device)
-            with autocast():  # Use AMP for each slice
-                output = model(slice_tensor, torch.tensor([[slice_img.size[0], slice_img.size[1]]]).to(args.device))
-            torch.cuda.empty_cache() 
+            # with autocast():  # Use AMP for each slice
+            output = model(slice_tensor, torch.tensor([[slice_img.size[0], slice_img.size[1]]]).to(args.device))
+            # torch.cuda.empty_cache()
             labels, boxes, scores = output
             
             labels = labels.cpu().detach().numpy()
@@ -182,10 +182,10 @@ def main(args, ):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, )
-    parser.add_argument('-r', '--resume', type=str, )
-    parser.add_argument('-f', '--im-file', type=str, )
-    parser.add_argument('-s', '--sliced', type=bool, default=False)
+    parser.add_argument('-c', '--config', type=str, default='../configs/rtdetr/local_test.yml')
+    parser.add_argument('-r', '--resume', type=str, default='../log/rtdetr_r18vd_deformable/checkpoint.pth')
+    parser.add_argument('-f', '--im-file', type=str, default='../configs/dataset/dfui/images/u002102.jpg')
+    parser.add_argument('-s', '--sliced', type=bool, default=True)
     parser.add_argument('-d', '--device', type=str, default='cpu')
     parser.add_argument('-nc', '--numberofboxes', type=int, default=25)
     args = parser.parse_args()

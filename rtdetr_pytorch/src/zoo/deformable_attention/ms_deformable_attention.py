@@ -159,7 +159,6 @@ class MSDeformableAttentionGQA(nn.Module): # Renamed class
 
         self._reset_parameters()
 
-
     def _reset_parameters(self):
         # sampling_offsets (depends on num_heads)
         init.constant_(self.sampling_offsets.weight, 0)

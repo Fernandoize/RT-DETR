@@ -1,39 +1,13 @@
 1. baseline 20088164  3个epoch 0.06
-
-# 使用gqa
-2. use gqa n_kv_head = 4 n_head的一半 19989476 3个epoch 0.01
-3. n_dim * 2, 3个epoch 0.027
-4. 添加了resnet第一层输入
-
-
-# query 1200 n_kv_head = 4, 71 epoch 0.250 done
-
-# query 300 n_kv_head = 4, 71 epoch 0.250 done
-
 # encoder换成了deformable 71 epoch 0.229 训练时间从30分钟减少到23分钟，减少了23%
-
-# 使用多层特征输入到transformer
-
-# 对query 进行对齐，content query, pos query等
-
-
 04-02
-
 # 尝试了直接使用0层的特征作为transformer encoder输入发现效果不好
-
-# 尝试使用多层
-
-
 ----
-
+# 尝试了基于预测值的topk query获取效果一般
 混合策略 (Hybrid Strategies):
-
 结合多种方法。例如，一部分参考点来自 Top-K，另一部分来自固定的稀疏网格以保证覆盖性，还有一部分是可学习的。
-
 优点： 可能取长补短。
-
 缺点： 设计和调优更复杂。
-
 04-05
 * 使用loss_quality: 0.263 23分钟
 * 使用deformable_encoder:
@@ -44,7 +18,7 @@
 * 使用decoder gqa = 4
 
 ----
-* 使用gate融合m kv_head = 4 涨点 53%
+* 使用gate融合m kv_head = 4 涨点5%左右，使用BottleNeck Gate需要将比例调整到0.9左右
 * 尝试使用bottleneck gate, decoder也使用kv_head
 * FFN改为DW卷积
 
@@ -56,3 +30,21 @@ FPN融合进入Deformble Encoder
 ----
 04.07
 FPN融合： 尝试ASPP 动态融合
+
+offset generate network
+self.conv_offset = nn.Sequential(
+    nn.Conv2d(self.n_group_channels, self.n_group_channels, kk, stride, pad_size, groups=self.n_group_channels),
+    LayerNormProxy(self.n_group_channels),
+    nn.GELU(),
+    nn.Conv2d(self.n_group_channels, 2, 1, 1, 0, bias=False)
+)
+
+尝试将其他 第0-(n-1)层特征下采样加到最后一层中进行编码 效果不好，特征可能丢失的比较多
+尝试进行动态融合
+----
+
+04.08 GQA只用于解码器，同时增加query个数 GQA先不尝试了，计算量并不会减少
+
+网络层中交替应用 Local Attention 和 Deformable Attention 尝试Local Attention 和 Deformable Attention的交替执行；
+
+

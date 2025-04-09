@@ -101,8 +101,8 @@ optimizer:
   weight_decay: 0.0001
 
 SetCriterion:
-  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2, loss_quality: 0, loss_query_count: 1}
-  losses: ['vfl', 'boxes', 'quality', 'query_count']
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2, loss_quality: 0 }
+  losses: ['vfl', 'boxes', 'quality']
   alpha: 0.75
   gamma: 2.0
 

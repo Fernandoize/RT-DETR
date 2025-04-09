@@ -1,7 +1,8 @@
 import unittest
 
 import torch
-from src.zoo.rtdetr.rtdetr_decoder import MSDeformableAttention
+from src.zoo.rtdetr.rtdetr_decoder import MSDeformableAttention, BottleneckGate, Gate
+
 
 class TestRtDetrDecoder(unittest.TestCase):
 
@@ -49,7 +50,4 @@ class TestRtDetrDecoder(unittest.TestCase):
 
         # 验证输出形状
         self.assertEqual(output.shape, (1, 256, 100))
-
-
-
 
