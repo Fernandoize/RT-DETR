@@ -291,11 +291,11 @@ class TransformerDecoder(nn.Module):
             # 注意：参考点的位置在不断的更新，因此 query_pos_embed 也在不断编码，其会作为最终的损失
             ref_points_input = ref_points_detach.unsqueeze(2)
             # 查询的位置编码是通过参考点生成的， dino中 ref_points_detach 先生成了正弦位置编码，然后才计算的embed
-            query_pos_embed = query_pos_head(
-                reference_points=ref_points_detach,
-                memory=memory
-            )
-            # query_pos_embed = query_pos_head(ref_points_detach)
+            # query_pos_embed = query_pos_head(
+            #     reference_points=ref_points_detach,
+            #     memory=memory
+            # )
+            query_pos_embed = query_pos_head(ref_points_detach)
 
             # query_pos_embed 为query中添加位置信息,
             output = layer(output, ref_points_input, memory,
@@ -506,12 +506,12 @@ class RTDETRTransformer(nn.Module):
         self.learnt_init_query = learnt_init_query
         if learnt_init_query:
             self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
-        # self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
-        self.query_pos_head = EnhancedPositionEncoding(
-            hidden_dim=hidden_dim,
-            num_scales=4,
-            num_heads=nhead
-        )
+        self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
+        # self.query_pos_head = EnhancedPositionEncoding(
+        #     hidden_dim=hidden_dim,
+        #     num_scales=4,
+        #     num_heads=nhead
+        # )
 
         # 编码器
         # encoder head: 对编码器进一步处理，生成编码器的最终输出
@@ -523,7 +523,7 @@ class RTDETRTransformer(nn.Module):
 
         # 生成类别分数和边界框坐标
         # TODO 添加一个物体数量预测头，根据预测的数量作为权重保留query
-        self.enc_score_head = nn.Linear(hidden_dim, 2)  # Changed to binary classification (background/foreground)
+        self.enc_score_head = nn.Linear(hidden_dim, num_classes)  # Changed to binary classification (background/foreground)
         self.enc_bbox_head = MLP(hidden_dim, hidden_dim, 4, num_layers=3)
         self.enc_quality_head = nn.Linear(hidden_dim, 1)
 
@@ -566,8 +566,8 @@ class RTDETRTransformer(nn.Module):
         init.xavier_uniform_(self.enc_output[0].weight)
         if self.learnt_init_query:
             init.xavier_uniform_(self.tgt_embed.weight)
-        # init.xavier_uniform_(self.query_pos_head.layers[0].weight)
-        # init.xavier_uniform_(self.query_pos_head.layers[1].weight)
+        init.xavier_uniform_(self.query_pos_head.layers[0].weight)
+        init.xavier_uniform_(self.query_pos_head.layers[1].weight)
 
 
     def _build_input_proj_layer(self, feat_channels):

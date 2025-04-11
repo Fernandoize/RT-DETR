@@ -60,3 +60,5 @@ self.conv_offset = nn.Sequential(
 FPN融合 尝试了其他的发现都不太稳定，好像还是PAN比较稳定 正常应该可以到24%左右，实际上17.2%
 第二篇论文实验准备
 第一篇论文开始做消融实验
+
+使用deformable encoder 收敛时间缩短了一半

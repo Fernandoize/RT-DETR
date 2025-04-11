@@ -38,6 +38,7 @@ train_dataloader:
   num_workers: 0
   drop_last: True
   collate_fn: default_collate_fn
+  pin_memory: True
 
 
 val_dataloader:
@@ -60,6 +61,7 @@ val_dataloader:
   num_workers: 0
   drop_last: False
   collate_fn: default_collate_fn
+  pin_memory: True
 
 output_dir: ./output/rtdetr_r18vd_6x_coco
 
