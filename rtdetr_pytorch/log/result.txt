@@ -1,0 +1,6 @@
+baseline 0.52
+deformable 0.524
+cross attention
+二分类
+wei
+fpn
