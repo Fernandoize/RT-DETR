@@ -35,6 +35,7 @@ class MLP(nn.Module):
             x = self.act(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
 
+
 class MSDeformableAttention(nn.Module):
     def __init__(self, embed_dim=256, num_heads=8, num_levels=4, num_points=4,):
         """
@@ -155,6 +156,7 @@ class MSDeformableAttention(nn.Module):
 
         return output
 
+
 class TransformerDecoderLayer(nn.Module):
     def __init__(self,
                  d_model=256,
@@ -178,8 +180,8 @@ class TransformerDecoderLayer(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
 
         # cross attention
-        # self.cross_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_kv_head, num_levels=n_levels, num_points=n_points)
-        self.cross_attn = MSDeformableAttention(d_model, n_head, n_levels, n_points)
+        self.cross_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_kv_head, num_levels=n_levels, num_points=n_points)
+        # self.cross_attn = MSDeformableAttention(d_model, n_head, n_levels, n_points)
         self.dropout2 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
@@ -289,7 +291,11 @@ class TransformerDecoder(nn.Module):
             # 注意：参考点的位置在不断的更新，因此 query_pos_embed 也在不断编码，其会作为最终的损失
             ref_points_input = ref_points_detach.unsqueeze(2)
             # 查询的位置编码是通过参考点生成的， dino中 ref_points_detach 先生成了正弦位置编码，然后才计算的embed
-            query_pos_embed = query_pos_head(ref_points_detach)
+            query_pos_embed = query_pos_head(
+                reference_points=ref_points_detach,
+                memory=memory
+            )
+            # query_pos_embed = query_pos_head(ref_points_detach)
 
             # query_pos_embed 为query中添加位置信息,
             output = layer(output, ref_points_input, memory,
@@ -319,6 +325,116 @@ class TransformerDecoder(nn.Module):
             ) if self.training else inter_ref_bbox
 
         return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(dec_out_quality)
+
+
+class EnhancedPositionEncoding(nn.Module):
+    def __init__(self, hidden_dim, num_scales=4, num_heads=8):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_scales = num_scales
+        
+        # 可学习的高斯参数
+        self.sigmas = nn.Parameter(torch.ones(num_scales))  # 不同尺度的sigma
+        self.centers = nn.Parameter(torch.zeros(num_scales, 2))  # 不同尺度的中心点
+        
+        # 多尺度特征融合
+        self.scale_fusion = nn.Sequential(
+            nn.Linear(num_scales, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim)
+        )
+        
+        # 位置编码的最终投影
+        self.proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim)
+        )
+        
+        # 初始化网络参数
+        self._reset_parameters()
+        
+    def _reset_parameters(self):
+        # 为不同尺度设置不同的初始sigma
+        sigmas = torch.linspace(0.5, 2.0, self.num_scales)
+        with torch.no_grad():
+            self.sigmas.copy_(sigmas)
+        
+        # 为中心点设置不同的初始位置
+        # 分别初始化x和y坐标
+        centers_x = torch.rand(self.num_scales) * 0.2 - 0.1  # 在[-0.1, 0.1]范围内随机初始化
+        centers_y = torch.rand(self.num_scales) * 0.2 - 0.1
+        with torch.no_grad():
+            self.centers[:, 0] = centers_x
+            self.centers[:, 1] = centers_y
+        
+        # 初始化scale_fusion模块
+        for m in self.scale_fusion.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0)
+        
+        # 初始化proj模块
+        for m in self.proj.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0)
+        
+    def gaussian_response(self, points, center, sigma):
+        # 考虑方向性的距离计算
+        diff = points - center
+        distance = torch.sum(diff**2, dim=-1)
+        direction = torch.atan2(diff[..., 1], diff[..., 0])  # 计算方向角
+        return torch.exp(-distance / (2 * sigma**2)) * (1 + 0.1 * torch.cos(direction))
+    
+    def generate_multi_scale_gaussian(self, reference_points):
+        """
+        生成多尺度高斯响应
+        reference_points: [bs, num_queries, 4] (x,y,w,h)
+        """
+        bs, num_queries, _ = reference_points.shape
+        center_points = reference_points[..., :2]  # [bs, num_queries, 2]
+        
+        # 为每个尺度生成高斯响应
+        gaussian_responses = []
+        for i in range(self.num_scales):
+            # 使用当前尺度的sigma和中心点
+            response = self.gaussian_response(
+                center_points.reshape(-1, 2),  # 展平所有点
+                self.centers[i],  # 当前尺度的中心点
+                self.sigmas[i]    # 当前尺度的sigma
+            )
+            gaussian_responses.append(response.reshape(bs, num_queries, 1))
+        
+        # 堆叠多尺度响应 [bs, num_queries, num_scales]
+        multi_scale_response = torch.cat(gaussian_responses, dim=-1)
+        
+        return multi_scale_response
+    
+    def forward(self, reference_points, memory):
+        """
+        reference_points: [bs, num_queries, 4] (x,y,w,h)
+        memory: [bs, num_tokens, hidden_dim] 编码器的输出特征
+        """
+        # 1. 生成多尺度高斯响应
+        multi_scale_response = self.generate_multi_scale_gaussian(reference_points)
+        
+        # 2. 融合多尺度信息
+        scale_features = self.scale_fusion(multi_scale_response)  # [bs, num_queries, hidden_dim]
+        
+        # 3. 添加层归一化
+        pos_embed = self.proj(scale_features)
+        
+        return pos_embed
 
 
 @register
@@ -390,7 +506,12 @@ class RTDETRTransformer(nn.Module):
         self.learnt_init_query = learnt_init_query
         if learnt_init_query:
             self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
-        self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
+        # self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
+        self.query_pos_head = EnhancedPositionEncoding(
+            hidden_dim=hidden_dim,
+            num_scales=4,
+            num_heads=nhead
+        )
 
         # 编码器
         # encoder head: 对编码器进一步处理，生成编码器的最终输出
@@ -402,14 +523,14 @@ class RTDETRTransformer(nn.Module):
 
         # 生成类别分数和边界框坐标
         # TODO 添加一个物体数量预测头，根据预测的数量作为权重保留query
-        self.enc_score_head = nn.Linear(hidden_dim, num_classes)
+        self.enc_score_head = nn.Linear(hidden_dim, 2)  # Changed to binary classification (background/foreground)
         self.enc_bbox_head = MLP(hidden_dim, hidden_dim, 4, num_layers=3)
         self.enc_quality_head = nn.Linear(hidden_dim, 1)
 
         # decoder head
         # 解码器的输出：类别分数、边界框坐标、边界框质量
         self.dec_score_head = nn.ModuleList([
-            nn.Linear(hidden_dim, num_classes)
+            nn.Linear(hidden_dim, num_classes)  # Keep multi-class classification
             for _ in range(num_decoder_layers)
         ])
         self.dec_quality_head = nn.ModuleList([
@@ -445,8 +566,8 @@ class RTDETRTransformer(nn.Module):
         init.xavier_uniform_(self.enc_output[0].weight)
         if self.learnt_init_query:
             init.xavier_uniform_(self.tgt_embed.weight)
-        init.xavier_uniform_(self.query_pos_head.layers[0].weight)
-        init.xavier_uniform_(self.query_pos_head.layers[1].weight)
+        # init.xavier_uniform_(self.query_pos_head.layers[0].weight)
+        # init.xavier_uniform_(self.query_pos_head.layers[1].weight)
 
 
     def _build_input_proj_layer(self, feat_channels):
@@ -561,7 +682,7 @@ class RTDETRTransformer(nn.Module):
         output_memory = self.enc_output(memory)
 
         # 每个token输出一个classes和bboxes
-        enc_outputs_class = self.enc_score_head(output_memory)
+        enc_outputs_class = self.enc_score_head(output_memory)  # Shape: [bs, num_tokens, 2]
         enc_quality_scores = self.enc_quality_head(output_memory)
 
         # 参考点是encoder输出的token    + anchors获得的, enc_bbox_head 输出的是偏移量offset, 表示相对于锚点的调整值
@@ -570,12 +691,22 @@ class RTDETRTransformer(nn.Module):
 
         # 2. topk query select & 归一化得到 reference_points_unact
         # 选择出预测可能性最大的topk class index
-        combined_scores = enc_outputs_class + 0.0 * enc_quality_scores
-        _, topk_ind = torch.topk(combined_scores.max(-1).values, self.num_queries, dim=1)
+        if enc_outputs_class.shape[-1] == 2:  # Binary classification case
+            # 对于二分类，分别计算背景和前景的概率
+            # enc_outputs_class shape: [bs, num_tokens, 2]
+            # 使用softmax计算每个类别的概率
+            probs = F.softmax(enc_outputs_class, dim=-1)  # Shape: [bs, num_tokens, 2]
+            # 获取前景概率（索引1）
+            foreground_probs = probs[:, :, 1] # Shape: [bs, num_tokens]
+            # 使用topk选择前景概率最高的num_queries个query
+            _, topk_ind = torch.topk(foreground_probs, self.num_queries, dim=1)
+        else:  # Multi-class classification case
+            # 使用原有的topk选择方式
+            combined_scores = enc_outputs_class + 0.0 * enc_quality_scores
+            _, topk_ind = torch.topk(combined_scores.max(-1).values, self.num_queries, dim=1)
 
         # 参考点 & 归一化
         # 根据参考点取出对应的值
-        # TODO
         reference_points_unact = enc_outputs_coord_unact.gather(dim=1, \
             index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_outputs_coord_unact.shape[-1]))
 
@@ -584,8 +715,9 @@ class RTDETRTransformer(nn.Module):
             reference_points_unact = torch.concat(
                 [denoising_bbox_unact, reference_points_unact], 1)
 
+        # 对于二分类，我们只需要前景类别的分数
         enc_topk_logits = enc_outputs_class.gather(dim=1, \
-            index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_outputs_class.shape[-1]))
+            index=topk_ind.unsqueeze(-1).repeat(1, 1, 2))  # Shape: [bs, num_queries, 2]
 
         enc_topk_score = enc_quality_scores.gather(dim=1, \
             index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_quality_scores.shape[-1]))

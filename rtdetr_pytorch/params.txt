@@ -47,4 +47,16 @@ self.conv_offset = nn.Sequential(
 
 网络层中交替应用 Local Attention 和 Deformable Attention 尝试Local Attention 和 Deformable Attention的交替执行；
 
-
+---
+04.09
+尝试多层特征交叉注意力融合 添加交叉注意力，效果有提升 到26%，而且后续还有提升的可能
+去掉FPN融合 和自注意力，只有 16% 掉了10%
+---
+04.10
+将多分类Topk的改为二分类，增加query数 16.7%指标看起来还可以
+使用基于中心点的位置表示 + 多尺度信息能够表示不同大小物体的位置  + 基于注意力机制根据图像内容动态调整位置编码
+---
+04.11
+FPN融合
+第二篇论文实验准备
+第一篇论文开始做消融实验

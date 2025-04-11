@@ -293,20 +293,34 @@ class HybridEncoder(nn.Module):
         assert len(feats) == len(self.in_channels)
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
         
-        # encoder
+        # Feature fusion before encoder
         if self.num_encoder_layers > 0:
-            for i, enc_ind in enumerate(self.use_encoder_idx):
-                h, w = proj_feats[enc_ind].shape[2:]
-                # flatten [B, C, H, W] to [B, HxW, C]
-                src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
-                if self.training or self.eval_spatial_size is None:
-                    pos_embed = self.build_2d_sincos_position_embedding(
-                        w, h, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
-                else:
-                    pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src_flatten.device)
+            # Start with the highest resolution feature
+            # 将1-n层的特征融合到第0层
+            fused_feat = proj_feats[0]
+            for i in range(1, len(proj_feats)):
+                # Upsample and add features
+                upsampled = F.interpolate(fused_feat, size=proj_feats[i].shape[2:], mode='nearest')
+                fused_feat = upsampled + proj_feats[i]
+            
+            # Process fused feature through encoder
+            h, w = fused_feat.shape[2:]
+            src_flatten = fused_feat.flatten(2).permute(0, 2, 1)
+            if self.training or self.eval_spatial_size is None:
+                pos_embed = self.build_2d_sincos_position_embedding(
+                    w, h, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
+            else:
+                pos_embed = getattr(self, f'pos_embed{0}', None).to(src_flatten.device)
 
-                memory :torch.Tensor = self.encoder[i](src_flatten, pos_embed=pos_embed)
-                proj_feats[enc_ind] = memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()
+            memory = self.encoder[0](src_flatten, pos_embed=pos_embed)
+            fused_feat = memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()
+            
+            # Distribute the fused feature back to original scales
+            for i in range(len(proj_feats)):
+                if i == 0:
+                    proj_feats[i] = fused_feat
+                else:
+                    proj_feats[i] = F.interpolate(fused_feat, size=proj_feats[i].shape[2:], mode='nearest')
 
         # broadcasting and fusion
         inner_outs = [proj_feats[-1]]

@@ -40,27 +40,32 @@ class DetSolver(BaseSolver):
 
             self.lr_scheduler.step()
             
-            if self.output_dir:
-                checkpoint_paths = [self.output_dir / 'checkpoint.pth']
-                # extra checkpoint before LR drop and every 100 epochs
-                if (epoch + 1) % args.checkpoint_step == 0:
-                    checkpoint_paths.append(self.output_dir / f'checkpoint{epoch:04}.pth')
-                for checkpoint_path in checkpoint_paths:
-                    dist.save_on_master(self.state_dict(epoch), checkpoint_path)
-
             module = self.ema.module if self.ema else self.model
             test_stats, coco_evaluator = evaluate(
                 module, self.criterion, self.postprocessor, self.val_dataloader, base_ds, self.device, self.output_dir
             )
 
-            # TODO 
+            # 更新最佳状态
+            should_save = False
             for k in test_stats.keys():
                 if k in best_stat:
-                    best_stat['epoch'] = epoch if test_stats[k][0] > best_stat[k] else best_stat['epoch']
-                    best_stat[k] = max(best_stat[k], test_stats[k][0])
+                    if test_stats[k][0] > best_stat[k]:
+                        best_stat[k] = test_stats[k][0]
+                        best_stat['epoch'] = epoch
+                        should_save = True
                 else:
-                    best_stat['epoch'] = epoch
                     best_stat[k] = test_stats[k][0]
+                    best_stat['epoch'] = epoch
+                    should_save = True
+            
+            # 只在性能提升时保存checkpoint
+            if should_save and self.output_dir:
+                checkpoint_paths = [self.output_dir / 'checkpoint.pth']
+                # 额外保存一个带epoch编号的checkpoint
+                checkpoint_paths.append(self.output_dir / f'checkpoint{epoch:04}.pth')
+                for checkpoint_path in checkpoint_paths:
+                    dist.save_on_master(self.state_dict(epoch), checkpoint_path)
+            
             print('best_stat: ', best_stat)
 
 

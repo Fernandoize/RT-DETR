@@ -81,7 +81,12 @@ class SetCriterion(nn.Module):
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
 
-        target = F.one_hot(target_classes, num_classes=self.num_classes + 1)[..., :-1]
+        if src_logits.shape[-1] == 2:
+            # For binary classification, convert to 0/1 labels
+            target_classes = (target_classes > 0).long()  # Convert to 0/1 labels
+            target = F.one_hot(target_classes, num_classes=2)  # Shape: [bs, num_queries, 2]
+        else:
+            target = F.one_hot(target_classes, num_classes=self.num_classes + 1)[..., :-1]
         loss = F.binary_cross_entropy_with_logits(src_logits, target * 1., reduction='none')
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
         return {'loss_bce': loss}
@@ -283,8 +288,11 @@ class SetCriterion(nn.Module):
                     if loss == 'labels':
                         # Logging is enabled only for the last layer
                         kwargs = {'log': False}
-
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
+                    # For encoder auxiliary outputs, use binary classification loss
+                    if aux_outputs['pred_logits'].shape[-1] == 2:  # Binary classification case
+                        l_dict = self.loss_labels_bce(aux_outputs, targets, indices, num_boxes, **kwargs)
+                    else:  # Decoder auxiliary outputs, use original multi-class loss
+                        l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
                     l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
                     l_dict = {k + f'_aux_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
@@ -352,7 +360,6 @@ def accuracy(output, target, topk=(1,)):
         correct_k = correct[:k].view(-1).float().sum(0)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
-
 
 
 
