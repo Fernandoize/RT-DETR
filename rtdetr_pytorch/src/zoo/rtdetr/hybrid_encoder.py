@@ -2,6 +2,8 @@
 '''
 
 import copy
+import logging
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -254,7 +256,7 @@ class CrossAttentionEncoderLayer(nn.Module):
 
         # Self attention
         if self.deformable_encoder:
-            self.self_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_head, num_levels=1, num_points=num_points)
+            self.self_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_head, num_levels=num_levels, num_points=num_points)
         else:
             self.self_attn = nn.MultiheadAttention(d_model, n_head, dropout, batch_first=True)
 
@@ -478,6 +480,7 @@ class HybridEncoder(nn.Module):
         #     )
 
         if self.use_cross_attention:
+            print("use cross attention")
             # Initialize cross attention encoder
             cross_encoder_layer = CrossAttentionEncoderLayer(
                 hidden_dim,
@@ -486,7 +489,7 @@ class HybridEncoder(nn.Module):
                 dropout=dropout,
                 activation=enc_act,
                 deformable_encoder=deformable_encoder,
-                num_levels=len(in_channels),
+                    num_levels=len(in_channels),
                 num_points=num_cross_attention_points
             )
             self.cross_encoder = CrossAttentionEncoder(
