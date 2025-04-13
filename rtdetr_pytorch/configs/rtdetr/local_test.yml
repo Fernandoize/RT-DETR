@@ -11,7 +11,7 @@ use_wandb: True
 
 num_classes: 5
 remap_mscoco_category: False
-fraction: 0.01
+fraction: 0.1
 
 train_dataloader:
   type: DataLoader
@@ -68,7 +68,7 @@ val_dataloader:
 output_dir: ./output/rtdetr_r18vd_6x_coco
 
 PResNet:
-  depth: 18
+  depth: 34
   freeze_at: -1
   freeze_norm: False
   pretrained: True
