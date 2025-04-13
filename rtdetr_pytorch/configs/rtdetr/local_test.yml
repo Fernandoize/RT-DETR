@@ -76,8 +76,7 @@ HybridEncoder:
   hidden_dim: 256
   expansion: 0.5
   deformable_encoder: True
-  use_cross_attention: True
-
+  use_cross_attention: False
 
 RTDETRTransformer:
   eval_idx: -1

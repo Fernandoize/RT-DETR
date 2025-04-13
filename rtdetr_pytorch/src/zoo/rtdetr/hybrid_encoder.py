@@ -173,7 +173,6 @@ class TransformerEncoderLayer(nn.Module):
 
     def forward(self, src, src_mask=None, pos_embed=None, reference_points=None, spatial_shapes:torch.Tensor = None) -> torch.Tensor:
         residual = src
-
         if self.normalize_before:
             src = self.norm1(src)
         q = k = self.with_pos_embed(src, pos_embed)
@@ -242,26 +241,36 @@ class TransformerEncoder(nn.Module):
 class CrossAttentionEncoderLayer(nn.Module):
     def __init__(self,
                  d_model,
-                 n_head,
+                 nhead,
                  dim_feedforward=2048,
                  dropout=0.1,
                  activation="relu",
                  normalize_before=False,
                  deformable_encoder=False,
                  num_levels=3,
-                 num_points=4):
+                 num_points=4,
+                 window_size=7,
+                 use_local_attention=True,
+                 use_self_attention=True):
         super().__init__()
         self.normalize_before = normalize_before
         self.deformable_encoder = deformable_encoder
+        self.use_local_attention = use_local_attention
+        self.use_self_attention = use_self_attention
 
         # Self attention
-        if self.deformable_encoder:
-            self.self_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_head, num_levels=1, num_points=num_points)
-        else:
-            self.self_attn = nn.MultiheadAttention(d_model, n_head, dropout, batch_first=True)
+        if use_self_attention:
+            if self.deformable_encoder:
+                self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=1, num_points=num_points)
+            else:
+                self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
 
         # Cross attention between different feature levels
-        self.cross_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_head, num_levels=num_levels, num_points=num_points)
+        self.cross_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=num_levels, num_points=num_points)
+        
+        # Add local attention
+        if use_local_attention:
+            self.local_attn = LocalAttention(d_model, nhead, window_size, dropout)
 
         # Feed forward network
         self.linear1 = nn.Linear(d_model, dim_feedforward)
@@ -272,9 +281,11 @@ class CrossAttentionEncoderLayer(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.norm3 = nn.LayerNorm(d_model)
+        self.norm4 = nn.LayerNorm(d_model)  # Add norm for local attention
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
         self.dropout3 = nn.Dropout(dropout)
+        self.dropout4 = nn.Dropout(dropout)  # Add dropout for local attention
         self.activation = get_activation(activation)
 
     @staticmethod
@@ -286,15 +297,16 @@ class CrossAttentionEncoderLayer(nn.Module):
         residual = src
         if self.normalize_before:
             src = self.norm1(src)
-        
+
         q = k = self.with_pos_embed(src, pos_embed)
-        if self.deformable_encoder:
-            src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
-        else:
-            src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
-        src = residual + self.dropout1(src2)
-        if not self.normalize_before:
-            src = self.norm1(src)
+        if self.use_self_attention:
+            if self.deformable_encoder:
+                src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
+            else:
+                src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
+            src = residual + self.dropout1(src2)
+            if not self.normalize_before:
+                src = self.norm1(src)
 
         # Cross attention with other feature levels
         if memory is not None:
@@ -312,15 +324,25 @@ class CrossAttentionEncoderLayer(nn.Module):
             src = residual + self.dropout2(src2)
             if not self.normalize_before:
                 src = self.norm2(src)
+                
+        # Local attention
+        if self.use_local_attention:
+            residual = src
+            if self.normalize_before:
+                src = self.norm3(src)
+            src2 = self.local_attn(src, pos_embed, reference_points, spatial_shapes)
+            src = residual + self.dropout3(src2)
+            if not self.normalize_before:
+                src = self.norm3(src)
 
         # Feed forward network
         residual = src
         if self.normalize_before:
-            src = self.norm3(src)
+            src = self.norm4(src)
         src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-        src = residual + self.dropout3(src2)
+        src = residual + self.dropout4(src2)
         if not self.normalize_before:
-            src = self.norm3(src)
+            src = self.norm4(src)
 
         return src
 
@@ -457,6 +479,7 @@ class HybridEncoder(nn.Module):
         # self.encoder = TransformerEncoder(copy.deepcopy(encoder_layer), num_encoder_layers, deformable_encoder=deformable_encoder)
 
         # top-down fpn
+        # FPN参数量400W
         # 从高层级到低层级，通过上采样和特征融合逐步生成金字塔特征
         self.lateral_convs = nn.ModuleList()
         self.fpn_blocks = nn.ModuleList()
@@ -605,3 +628,68 @@ class HybridEncoder(nn.Module):
             outs.append(out)
 
         return proj_feats
+
+
+class LocalAttention(nn.Module):
+    """Local attention module that focuses on local regions around each query point."""
+
+    def __init__(self, d_model, nhead, window_size=7, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.nhead = nhead
+        self.window_size = window_size
+        self.scale = (d_model // nhead) ** -0.5
+
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, pos_embed=None, reference_points=None, spatial_shapes=None):
+        B, N, C = x.shape
+        H, W = spatial_shapes[0] if spatial_shapes is not None else (int(N ** 0.5), int(N ** 0.5))
+
+        # Add position embedding if provided
+        if pos_embed is not None:
+            x = x + pos_embed
+
+        # Project queries, keys and values
+        q = self.q_proj(x).view(B, N, self.nhead, C // self.nhead).transpose(1, 2)
+        k = self.k_proj(x).view(B, N, self.nhead, C // self.nhead).transpose(1, 2)
+        v = self.v_proj(x).view(B, N, self.nhead, C // self.nhead).transpose(1, 2)
+
+        # Reshape to 2D grid
+        q = q.view(B, self.nhead, H, W, C // self.nhead)
+        k = k.view(B, self.nhead, H, W, C // self.nhead)
+        v = v.view(B, self.nhead, H, W, C // self.nhead)
+
+        # Pad if necessary
+        pad_l = pad_t = pad_r = pad_b = self.window_size // 2
+        q = F.pad(q, (0, 0, pad_l, pad_r, pad_t, pad_b))
+        k = F.pad(k, (0, 0, pad_l, pad_r, pad_t, pad_b))
+        v = F.pad(v, (0, 0, pad_l, pad_r, pad_t, pad_b))
+
+        # Unfold to get local windows
+        q = q.unfold(2, self.window_size, 1).unfold(3, self.window_size, 1)
+        k = k.unfold(2, self.window_size, 1).unfold(3, self.window_size, 1)
+        v = v.unfold(2, self.window_size, 1).unfold(3, self.window_size, 1)
+
+        # Reshape for attention computation
+        q = q.contiguous().view(B, self.nhead, H, W, self.window_size * self.window_size, C // self.nhead)
+        k = k.contiguous().view(B, self.nhead, H, W, self.window_size * self.window_size, C // self.nhead)
+        v = v.contiguous().view(B, self.nhead, H, W, self.window_size * self.window_size, C // self.nhead)
+
+        # Compute attention
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.dropout(attn)
+
+        # Apply attention
+        x = (attn @ v).view(B, self.nhead, H, W, self.window_size * self.window_size, C // self.nhead)
+        x = x.mean(dim=4)  # Average over local window
+        x = x.transpose(1, 2).reshape(B, N, C)
+
+        # Final projection
+        x = self.out_proj(x)
+        return x
