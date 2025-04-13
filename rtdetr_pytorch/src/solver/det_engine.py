@@ -10,6 +10,7 @@ import os
 import sys
 import pathlib
 from typing import Iterable
+import wandb
 
 import torch
 import torch.amp 
@@ -31,6 +32,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     
     ema = kwargs.get('ema', None)
     scaler = kwargs.get('scaler', None)
+    use_wandb = kwargs.get('use_wandb', False)
 
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
         samples = samples.to(device)
@@ -81,16 +83,36 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         metric_logger.update(loss=loss_value, **loss_dict_reduced)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        
+        # Log to wandb
+        if use_wandb:
+            # Use the count from the loss meter which is always present
+            global_step = epoch * len(data_loader) + metric_logger.meters['loss'].count
+            wandb.log({
+                'train/loss': loss_value,
+                'train/lr': optimizer.param_groups[0]["lr"],
+                **{f'train/{k}': v for k, v in loss_dict_reduced.items()},
+                'step': global_step,
+                'epoch': epoch
+            })
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
+    
+    # Log epoch-level metrics
+    if use_wandb:
+        wandb.log({
+            **{f'train_epoch/{k}': meter.global_avg for k, meter in metric_logger.meters.items()},
+            'epoch': epoch
+        })
+    
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
 
 @torch.no_grad()
-def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessors, data_loader, base_ds, device, output_dir):
+def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessors, data_loader, base_ds, device, output_dir, epoch=None, use_wandb=False):
     model.eval()
     criterion.eval()
 
@@ -176,6 +198,17 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessors,
     if coco_evaluator is not None:
         if 'bbox' in iou_types:
             stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
+            # Log COCO metrics to wandb
+            if use_wandb and epoch is not None:
+                wandb.log({
+                    'val/AP': stats['coco_eval_bbox'][0],
+                    'val/AP50': stats['coco_eval_bbox'][1],
+                    'val/AP75': stats['coco_eval_bbox'][2],
+                    'val/APs': stats['coco_eval_bbox'][3],
+                    'val/APm': stats['coco_eval_bbox'][4],
+                    'val/APl': stats['coco_eval_bbox'][5],
+                    'epoch': epoch
+                })
         if 'segm' in iou_types:
             stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats.tolist()
             

@@ -4,8 +4,10 @@ by lyuwenyu
 import time 
 import json
 import datetime
+from pathlib import Path
 
 import torch 
+import wandb
 
 from src.misc import dist
 from src.data import get_coco_api_from_dataset
@@ -29,6 +31,17 @@ class DetSolver(BaseSolver):
         # best_stat = {'coco_eval_bbox': 0, 'coco_eval_masks': 0, 'epoch': -1, }
         best_stat = {'epoch': -1, }
 
+        # Initialize wandb
+        if dist.is_main_process():
+            wandb.init(
+                project="rtdetr",  # 项目名称
+                name=f"exp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",  # 实验名称
+                config=args,  # 记录配置参数
+                dir=str(self.output_dir),  # 日志保存目录
+            )
+            # 记录模型结构
+            wandb.watch(self.model, log="all", log_freq=100)
+
         start_time = time.time()
         for epoch in range(self.last_epoch + 1, args.epoches):
             if dist.is_dist_available_and_initialized():
@@ -36,13 +49,15 @@ class DetSolver(BaseSolver):
             
             train_stats = train_one_epoch(
                 self.model, self.criterion, self.train_dataloader, self.optimizer, self.device, epoch,
-                args.clip_max_norm, print_freq=args.log_step, ema=self.ema, scaler=self.scaler)
+                args.clip_max_norm, print_freq=args.log_step, ema=self.ema, scaler=self.scaler, 
+                use_wandb=dist.is_main_process())
 
             self.lr_scheduler.step()
             
             module = self.ema.module if self.ema else self.model
             test_stats, coco_evaluator = evaluate(
-                module, self.criterion, self.postprocessor, self.val_dataloader, base_ds, self.device, self.output_dir
+                module, self.criterion, self.postprocessor, self.val_dataloader, base_ds, 
+                self.device, self.output_dir, epoch=epoch, use_wandb=dist.is_main_process()
             )
 
             # 更新最佳状态
@@ -65,9 +80,12 @@ class DetSolver(BaseSolver):
                 checkpoint_paths.append(self.output_dir / f'checkpoint{epoch:04}.pth')
                 for checkpoint_path in checkpoint_paths:
                     dist.save_on_master(self.state_dict(epoch), checkpoint_path)
+                    
+                # 保存最佳模型到wandb
+                if dist.is_main_process():
+                    wandb.save(str(checkpoint_paths[0]))
             
             print('best_stat: ', best_stat)
-
 
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         **{f'test_{k}': v for k, v in test_stats.items()},
@@ -92,6 +110,10 @@ class DetSolver(BaseSolver):
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print('Training time {}'.format(total_time_str))
+        
+        # Finish wandb run
+        if dist.is_main_process():
+            wandb.finish()
 
 
     def val(self, ):
@@ -99,11 +121,27 @@ class DetSolver(BaseSolver):
 
         base_ds = get_coco_api_from_dataset(self.val_dataloader.dataset)
         
+        # Initialize wandb for validation
+        if dist.is_main_process():
+            wandb.init(
+                project="rtdetr_val",
+                name=f"val_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                config=self.cfg,
+                dir=str(self.output_dir),
+            )
+            
         module = self.ema.module if self.ema else self.model
-        test_stats, coco_evaluator = evaluate(module, self.criterion, self.postprocessor,
-                self.val_dataloader, base_ds, self.device, self.output_dir)
+        test_stats, coco_evaluator = evaluate(
+            module, self.criterion, self.postprocessor,
+            self.val_dataloader, base_ds, self.device, self.output_dir,
+            use_wandb=dist.is_main_process()
+        )
                 
         if self.output_dir:
             dist.save_on_master(coco_evaluator.coco_eval["bbox"].eval, self.output_dir / "eval.pth")
         
+        # Finish wandb run
+        if dist.is_main_process():
+            wandb.finish()
+            
         return

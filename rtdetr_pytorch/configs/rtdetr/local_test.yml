@@ -7,6 +7,8 @@ __include__: [
   './include/rtdetr_r50vd.yml',
 ]
 
+use_wandb: True
+
 num_classes: 5
 remap_mscoco_category: False
 fraction: 0.01
