@@ -19,9 +19,6 @@ __all__ = ['RTDETRTransformer']
 
 from ..deformable_attention.ms_deformable_attention import MSDeformableAttentionGQA
 
-from ..group_query_attention.grop_query_attention import GroupQueryAttention
-
-
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers, act='relu'):
         super().__init__()
