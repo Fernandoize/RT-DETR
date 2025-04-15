@@ -277,7 +277,6 @@ class TransformerDecoder(nn.Module):
                 memory_level_start_index,
                 bbox_head,
                 score_head,
-                quality_head,
                 query_pos_head,
                 attn_mask=None,
                 memory_mask=None):
@@ -307,7 +306,6 @@ class TransformerDecoder(nn.Module):
 
             if self.training:
                 dec_out_logits.append(score_head[i](output))
-                dec_out_quality.append(quality_head[i](output))
                 if i == 0:
                     dec_out_bboxes.append(inter_ref_bbox)
                 else:
@@ -316,7 +314,6 @@ class TransformerDecoder(nn.Module):
             elif i == self.eval_idx:
                 dec_out_logits.append(score_head[i](output))
                 dec_out_bboxes.append(inter_ref_bbox)
-                dec_out_quality.append(quality_head[i](output))
                 break
 
             # 保存上一层的参考点
@@ -324,7 +321,7 @@ class TransformerDecoder(nn.Module):
             ref_points_detach = inter_ref_bbox.detach(
             ) if self.training else inter_ref_bbox
 
-        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits), torch.stack(dec_out_quality)
+        return torch.stack(dec_out_bboxes), torch.stack(dec_out_logits)
 
 
 class EnhancedPositionEncoding(nn.Module):
@@ -525,7 +522,6 @@ class RTDETRTransformer(nn.Module):
         # TODO 添加一个物体数量预测头，根据预测的数量作为权重保留query
         self.enc_score_head = nn.Linear(hidden_dim, num_classes)  # Changed to binary classification (background/foreground)
         self.enc_bbox_head = MLP(hidden_dim, hidden_dim, 4, num_layers=3)
-        self.enc_quality_head = nn.Linear(hidden_dim, 1)
 
         # decoder head
         # 解码器的输出：类别分数、边界框坐标、边界框质量
@@ -552,7 +548,6 @@ class RTDETRTransformer(nn.Module):
         bias = bias_init_with_prob(0.01)
 
         init.constant_(self.enc_score_head.bias, bias)
-        init.constant_(self.enc_quality_head.bias, bias)
         init.constant_(self.enc_bbox_head.layers[-1].weight, 0)
         init.constant_(self.enc_bbox_head.layers[-1].bias, 0)
 
@@ -683,7 +678,6 @@ class RTDETRTransformer(nn.Module):
 
         # 每个token输出一个classes和bboxes
         enc_outputs_class = self.enc_score_head(output_memory)  # Shape: [bs, num_tokens, 2]
-        enc_quality_scores = self.enc_quality_head(output_memory)
 
         # 参考点是encoder输出的token    + anchors获得的, enc_bbox_head 输出的是偏移量offset, 表示相对于锚点的调整值
         # 直接预测坐标会导致训练不稳定，尤其是目标尺度变化较大时，预测偏移量则可以更好的约束模型的学习范围，使其更容易收敛
@@ -702,8 +696,7 @@ class RTDETRTransformer(nn.Module):
             _, topk_ind = torch.topk(foreground_probs, self.num_queries, dim=1)
         else:  # Multi-class classification case
             # 使用原有的topk选择方式
-            combined_scores = enc_outputs_class + 0.0 * enc_quality_scores
-            _, topk_ind = torch.topk(combined_scores.max(-1).values, self.num_queries, dim=1)
+            _, topk_ind = torch.topk(enc_outputs_class.max(-1).values, self.num_queries, dim=1)
 
         # 参考点 & 归一化
         # 根据参考点取出对应的值
@@ -719,9 +712,6 @@ class RTDETRTransformer(nn.Module):
         enc_topk_logits = enc_outputs_class.gather(dim=1, \
             index=topk_ind.unsqueeze(-1).repeat(1, 1, 2))  # Shape: [bs, num_queries, 2]
 
-        enc_topk_score = enc_quality_scores.gather(dim=1, \
-            index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_quality_scores.shape[-1]))
-
         # extract region features
         # TODO Topk位置聚合
         if self.learnt_init_query:
@@ -734,7 +724,7 @@ class RTDETRTransformer(nn.Module):
         if denoising_class is not None:
             target = torch.concat([denoising_class, target], 1)
 
-        return target, reference_points_unact.detach(), enc_topk_bboxes, enc_topk_logits, enc_topk_score
+        return target, reference_points_unact.detach(), enc_topk_bboxes, enc_topk_logits
 
 
     def forward(self, feats, targets=None):
@@ -758,11 +748,11 @@ class RTDETRTransformer(nn.Module):
             denoising_class, denoising_bbox_unact, attn_mask, dn_meta = None, None, None, None
 
         # 3. 准备解码器的输出
-        target, init_ref_points_unact, enc_topk_bboxes, enc_topk_logits, enc_topk_quality = \
+        target, init_ref_points_unact, enc_topk_bboxes, enc_topk_logits = \
             self._get_decoder_input(memory, spatial_shapes, denoising_class, denoising_bbox_unact)
 
         # decoder 4. 解码器
-        out_bboxes, out_logits, out_quality = self.decoder(
+        out_bboxes, out_logits = self.decoder(
             target,
             init_ref_points_unact,
             memory,
@@ -770,35 +760,33 @@ class RTDETRTransformer(nn.Module):
             level_start_index,
             self.dec_bbox_head,
             self.dec_score_head,
-            self.dec_quality_head,
             self.query_pos_head,
             attn_mask=attn_mask)
 
         if self.training and dn_meta is not None:
             dn_out_bboxes, out_bboxes = torch.split(out_bboxes, dn_meta['dn_num_split'], dim=2)
             dn_out_logits, out_logits = torch.split(out_logits, dn_meta['dn_num_split'], dim=2)
-            dn_out_quality, out_quality = torch.split(out_quality, dn_meta['dn_num_split'], dim=2)
 
-        out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1], 'pred_quality': out_quality[-1]}
+        out = {'pred_logits': out_logits[-1], 'pred_boxes': out_bboxes[-1]}
 
         if self.training and self.aux_loss:
-            out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1], out_quality[:-1])
-            out['aux_outputs'].extend(self._set_aux_loss([enc_topk_logits], [enc_topk_bboxes], [enc_topk_quality]))
+            out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1])
+            out['aux_outputs'].extend(self._set_aux_loss([enc_topk_logits], [enc_topk_bboxes]))
 
             if self.training and dn_meta is not None:
-                out['dn_aux_outputs'] = self._set_aux_loss(dn_out_logits, dn_out_bboxes, dn_out_quality)
+                out['dn_aux_outputs'] = self._set_aux_loss(dn_out_logits, dn_out_bboxes)
                 out['dn_meta'] = dn_meta
 
         return out
 
 
     @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_coord, outputs_quality):
+    def _set_aux_loss(self, outputs_class, outputs_coord):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        return [{'pred_logits': a, 'pred_boxes': b, 'pred_quality': c }
-                for a, b, c in zip(outputs_class, outputs_coord, outputs_quality)]
+        return [{'pred_logits': a, 'pred_boxes': b }
+                for a, b in zip(outputs_class, outputs_coord)]
 
 
 class Gate(nn.Module):

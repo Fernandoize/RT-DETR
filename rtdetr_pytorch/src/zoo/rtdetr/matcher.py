@@ -39,7 +39,6 @@ class HungarianMatcher(nn.Module):
         self.cost_class = weight_dict['cost_class']
         self.cost_bbox = weight_dict['cost_bbox']
         self.cost_giou = weight_dict['cost_giou']
-        self.cost_quality = weight_dict['cost_quality']
 
         self.use_focal_loss = use_focal_loss
         self.alpha = alpha
@@ -73,10 +72,8 @@ class HungarianMatcher(nn.Module):
         # We flatten to compute the cost matrices in a batch
         if self.use_focal_loss:
             out_prob = F.sigmoid(outputs["pred_logits"].flatten(0, 1))
-            out_quality = F.sigmoid(outputs["pred_quality"].flatten(0, 1))
         else:
             out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)
-            out_quality = F.sigmoid(outputs["pred_quality"].flatten(0, 1))            # [batch_size * num_queries, num_classes]
 
         out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
 
@@ -107,8 +104,6 @@ class HungarianMatcher(nn.Module):
         cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox))
 
         # Compute quality loss
-        cost_quality = out_quality.expand_as(cost_giou) * out_quality # Shape: (num_correct_samples, 1)
-
         # Final cost matrix
         C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
         C = C.view(bs, num_queries, -1).cpu()

@@ -205,24 +205,6 @@ class SetCriterion(nn.Module):
         }
         return losses
 
-    def loss_quality(self, outputs, targets, indices, num_boxes):
-        assert 'pred_boxes' in outputs
-        assert 'pred_quality' in outputs
-        idx = self._get_src_permutation_idx(indices)
-
-        src_boxes = outputs['pred_boxes'][idx]
-        target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
-        # ious, _ = box_iou(box_cxcywh_to_xyxy(src_boxes), box_cxcywh_to_xyxy(target_boxes))
-        # ious = torch.diag(ious).detach()
-
-        loss_giou = 1 - torch.diag(generalized_box_iou(
-            box_cxcywh_to_xyxy(src_boxes),
-            box_cxcywh_to_xyxy(target_boxes)))
-
-        src_quality = outputs['pred_quality'][idx]
-        loss = F.binary_cross_entropy_with_logits(src_quality, (loss_giou.unsqueeze(-1) + 1) / 2, reduction='mean')
-        return { 'loss_quality': loss }
-
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -240,7 +222,6 @@ class SetCriterion(nn.Module):
             'labels': self.loss_labels,
             'cardinality': self.loss_cardinality,
             'boxes': self.loss_boxes,
-            'quality': self.loss_quality,
             'masks': self.loss_masks,
 
             'bce': self.loss_labels_bce,

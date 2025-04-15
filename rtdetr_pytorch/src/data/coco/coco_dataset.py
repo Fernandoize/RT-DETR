@@ -7,6 +7,8 @@ Mostly copy-paste from https://github.com/pytorch/vision/blob/13b35ff/references
 import numpy as np
 import torch
 import torch.utils.data
+from collections import defaultdict
+import os
 
 import torchvision
 torchvision.disable_beta_transforms_warning()
@@ -25,7 +27,7 @@ class CocoDetection(torchvision.datasets.CocoDetection):
     __inject__ = ['transforms']
     __share__ = ['remap_mscoco_category', 'fraction']
     
-    def __init__(self, img_folder, ann_file, transforms, return_masks, remap_mscoco_category=False,  fraction=0.01):
+    def __init__(self, img_folder, ann_file, transforms, return_masks, remap_mscoco_category=False, fraction=0.01):
         super(CocoDetection, self).__init__(img_folder, ann_file)
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks, remap_mscoco_category)
@@ -34,31 +36,138 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         self.return_masks = return_masks
         self.remap_mscoco_category = remap_mscoco_category
 
+        # 获取原始数据集大小
         before_size = len(self.ids)
-        self.ids = self.ids[:int(len(self.ids) * fraction)]
+        
+        # 统计每个类别的bbox数量
+        category_bbox_counts = defaultdict(int)
+        image_to_bboxes = defaultdict(list)  # 存储每个图像中的bbox信息
+        
+        for img_id in self.ids:
+            # 验证图像文件是否存在
+            img_info = self.coco.loadImgs(img_id)
+            if not img_info:
+                print(f"Warning: Image ID {img_id} not found in COCO dataset")
+                continue
+                
+            img_path = os.path.join(self.img_folder, img_info[0]['file_name'])
+            if not os.path.exists(img_path):
+                print(f"Warning: Image file not found: {img_path}")
+                continue
+            
+            ann_ids = self.coco.getAnnIds(imgIds=img_id)
+            anns = self.coco.loadAnns(ann_ids)
+            
+            # 统计该图像中每个类别的bbox数量
+            img_bbox_counts = defaultdict(int)
+            for ann in anns:
+                if 'iscrowd' not in ann or ann['iscrowd'] == 0:
+                    cat_id = ann['category_id']
+                    img_bbox_counts[cat_id] += 1
+                    category_bbox_counts[cat_id] += 1
+            
+            # 存储图像ID和其包含的bbox信息
+            if img_bbox_counts:
+                image_to_bboxes[img_id] = img_bbox_counts
+        
+        # 计算目标每个类别的bbox数量
+        target_bbox_per_category = int(min(category_bbox_counts.values()) * fraction)
+        print(f"Target bbox count per category: {target_bbox_per_category}")
+        
+        # 为每个类别选择图像，直到达到目标bbox数量
+        selected_image_ids = set()
+        category_bbox_selected = defaultdict(int)
+        
+        # 按类别循环，直到所有类别都达到目标数量
+        while True:
+            all_categories_complete = True
+            for cat_id, total_bboxes in category_bbox_counts.items():
+                if category_bbox_selected[cat_id] >= target_bbox_per_category:
+                    continue
+                    
+                all_categories_complete = False
+                
+                # 找到包含该类别且未被选中的图像
+                available_images = [
+                    img_id for img_id, bbox_counts in image_to_bboxes.items()
+                    if img_id not in selected_image_ids and cat_id in bbox_counts
+                ]
+                
+                if not available_images:
+                    continue
+                    
+                # 选择包含最多该类别bbox的图像
+                selected_img_id = max(
+                    available_images,
+                    key=lambda x: image_to_bboxes[x][cat_id]
+                )
+                
+                selected_image_ids.add(selected_img_id)
+                category_bbox_selected[cat_id] += image_to_bboxes[selected_img_id][cat_id]
+                
+                # 更新其他类别的计数
+                for other_cat_id, count in image_to_bboxes[selected_img_id].items():
+                    if other_cat_id != cat_id:
+                        category_bbox_selected[other_cat_id] += count
+            
+            if all_categories_complete:
+                break
+        
+        # 更新self.ids
+        self.ids = list(selected_image_ids)
         print(f"{self.ann_file}, before_size: {before_size}, sample size: {len(self.ids)}")
-        # self.ids = list(range(int(len(self.ids) * fraction)))
+        
+        # 打印每个类别的bbox数量
+        print("\nCategory bbox distribution in sampled dataset:")
+        for cat_id, count in sorted(category_bbox_selected.items()):
+            cat_name = self.coco.cats[cat_id]['name']
+            print(f"  {cat_name} ({cat_id}): {count} bboxes")
+        
+        # 打印每个类别的图像数量
+        category_image_counts = defaultdict(int)
+        for img_id in self.ids:
+            for cat_id in image_to_bboxes[img_id].keys():
+                category_image_counts[cat_id] += 1
+        
+        print("\nCategory image distribution in sampled dataset:")
+        for cat_id, count in sorted(category_image_counts.items()):
+            cat_name = self.coco.cats[cat_id]['name']
+            print(f"  {cat_name} ({cat_id}): {count} images")
 
     def __getitem__(self, idx):
-        img, target = super(CocoDetection, self).__getitem__(idx)
-        image_id = self.ids[idx]
-        target = {'image_id': image_id, 'annotations': target}
-        img, target = self.prepare(img, target)
+        try:
+            img_id = self.ids[idx]
+            img_info = self.coco.loadImgs(img_id)
+            if not img_info:
+                raise ValueError(f"Image ID {img_id} not found in COCO dataset")
+                
+            img_path = os.path.join(self.img_folder, img_info[0]['file_name'])
+            if not os.path.exists(img_path):
+                raise FileNotFoundError(f"Image file not found: {img_path}")
+                
+            img, target = super(CocoDetection, self).__getitem__(idx)
+            image_id = self.ids[idx]
+            target = {'image_id': image_id, 'annotations': target}
+            img, target = self.prepare(img, target)
 
-        # ['boxes', 'masks', 'labels']:
-        if 'boxes' in target:
-            target['boxes'] = datapoints.BoundingBoxes(
-                target['boxes'], 
-                format=datapoints.BoundingBoxFormat.XYXY,
-                canvas_size=img.size[::-1]) # h w
+            # ['boxes', 'masks', 'labels']:
+            if 'boxes' in target:
+                target['boxes'] = datapoints.BoundingBoxes(
+                    target['boxes'], 
+                    format=datapoints.BoundingBoxFormat.XYXY,
+                    canvas_size=img.size[::-1]) # h w
 
-        if 'masks' in target:
-            target['masks'] = datapoints.Mask(target['masks'])
+            if 'masks' in target:
+                target['masks'] = datapoints.Mask(target['masks'])
 
-        if self._transforms is not None:
-            img, target = self._transforms(img, target)
-            
-        return img, target
+            if self._transforms is not None:
+                img, target = self._transforms(img, target)
+                
+            return img, target
+        except Exception as e:
+            print(f"Error loading image at index {idx}: {str(e)}")
+            # 返回一个空样本
+            return None, None
 
     def extra_repr(self) -> str:
         s = f' img_folder: {self.img_folder}\n ann_file: {self.ann_file}\n'
@@ -66,7 +175,7 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         if hasattr(self, '_transforms') and self._transforms is not None:
             s += f' transforms:\n   {repr(self._transforms)}'
 
-        return s 
+        return s
 
 
 def convert_coco_poly_to_mask(segmentations, height, width):

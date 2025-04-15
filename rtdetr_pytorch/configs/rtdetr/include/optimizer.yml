@@ -1,4 +1,3 @@
-
 use_ema: True 
 ema:
   type: ModelEMA
