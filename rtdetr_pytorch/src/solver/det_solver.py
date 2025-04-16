@@ -36,7 +36,7 @@ class DetSolver(BaseSolver):
             raise Exception("please config wandb_name or wandb_resume")
 
         # Initialize wandb
-        if dist.is_main_process():
+        if dist.is_main_process() and yaml_cfg['use_wandb']:
             wandb.init(
                 project="rtdetr",  # 项目名称
                 name=yaml_cfg['wandb_name'],  # 实验名称
@@ -127,7 +127,8 @@ class DetSolver(BaseSolver):
         base_ds = get_coco_api_from_dataset(self.val_dataloader.dataset)
         
         # Initialize wandb for validation
-        if dist.is_main_process():
+        yaml_cfg = self.cfg.yaml_cfg
+        if dist.is_main_process() and yaml_cfg['use_wandb']:
             wandb.init(
                 project="rtdetr_val",
                 name=f"val_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",

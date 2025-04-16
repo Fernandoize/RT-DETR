@@ -8,8 +8,8 @@ __include__: [
 ]
 
 
-use_wandb: True
-wandb_name: Test
+use_wandb: False
+wandb_name: fast_valid
 wandb_resume: True
 
 num_classes: 4
