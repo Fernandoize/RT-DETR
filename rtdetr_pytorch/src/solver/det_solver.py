@@ -31,13 +31,18 @@ class DetSolver(BaseSolver):
         # best_stat = {'coco_eval_bbox': 0, 'coco_eval_masks': 0, 'epoch': -1, }
         best_stat = {'epoch': -1, }
 
+        yaml_cfg = args.yaml_cfg
+        if not yaml_cfg['wandb_name'] or not yaml_cfg['wandb_resume']:
+            raise Exception("please config wandb_name or wandb_resume")
+
         # Initialize wandb
         if dist.is_main_process():
             wandb.init(
                 project="rtdetr",  # 项目名称
-                name=f"exp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",  # 实验名称
+                name=yaml_cfg['wandb_name'],  # 实验名称
                 config=args,  # 记录配置参数
                 dir=str(self.output_dir),  # 日志保存目录
+                resume=yaml_cfg['wandb_resume']
             )
             # 记录模型结构
             wandb.watch(self.model, log="all", log_freq=100)

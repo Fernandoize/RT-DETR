@@ -9,6 +9,9 @@ __include__: [
 
 
 use_wandb: True
+wandb_name: Test
+wandb_resume: True
+
 num_classes: 4
 remap_mscoco_category: False
 # 保证数据比例平衡
