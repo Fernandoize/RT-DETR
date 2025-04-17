@@ -16,7 +16,7 @@ from .box_ops import box_cxcywh_to_xyxy, box_iou, generalized_box_iou
 
 from src.misc.dist import get_world_size, is_dist_available_and_initialized
 from src.core import register
-
+from src.zoo.loss.wasserstein_loss import WassersteinLoss
 
 
 @register
@@ -42,7 +42,8 @@ class SetCriterion(nn.Module):
         self.num_classes = num_classes
         self.matcher = matcher
         self.weight_dict = weight_dict
-        self.losses = losses 
+        self.losses = losses
+        self.wasserstein_loss = WassersteinLoss()
 
         empty_weight = torch.ones(self.num_classes + 1)
         empty_weight[-1] = eos_coef
@@ -173,7 +174,10 @@ class SetCriterion(nn.Module):
         loss_giou = 1 - torch.diag(generalized_box_iou(
                 box_cxcywh_to_xyxy(src_boxes),
                 box_cxcywh_to_xyxy(target_boxes)))
+        # loss_giou = self.wasserstein_loss(src_boxes, target_boxes) + loss_giou
         losses['loss_giou'] = loss_giou.sum() / num_boxes
+
+        # wasserstein_loss = self.wasserstein_loss(src_boxes, target_boxes)
         return losses
 
     def loss_masks(self, outputs, targets, indices, num_boxes):

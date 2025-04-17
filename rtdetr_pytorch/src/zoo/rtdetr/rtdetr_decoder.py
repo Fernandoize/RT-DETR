@@ -169,10 +169,7 @@ class TransformerDecoderLayer(nn.Module):
         super(TransformerDecoderLayer, self).__init__()
 
         # self attention
-        if use_gqa:
-            self.self_attn = GroupQueryAttention(embed_dim=d_model, num_heads=n_head, num_kv_heads=n_kv_head, attn_dropout=dropout)
-        else:
-            self.self_attn = nn.MultiheadAttention(d_model, n_head, dropout=dropout, batch_first=True)
+        self.self_attn = nn.MultiheadAttention(d_model, n_head, dropout=dropout, batch_first=True)
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
 
@@ -345,6 +342,8 @@ class EnhancedPositionEncoding(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim)
         )
+
+        # self.mlp = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
         
         # 初始化网络参数
         self._reset_parameters()
@@ -382,9 +381,13 @@ class EnhancedPositionEncoding(nn.Module):
             elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0)
+
+        # 初始化mlp
+        # init.xavier_uniform_(self.mlp.layers[0].weight)
+        # init.xavier_uniform_(self.mlp.layers[1].weight)
         
     def gaussian_response(self, points, center, sigma):
-        # 考虑方向性的距离计算
+        # 考虑方向性的距离计算, 输入数据与高斯函数的中心位置的接近程度
         diff = points - center
         distance = torch.sum(diff**2, dim=-1)
         direction = torch.atan2(diff[..., 1], diff[..., 0])  # 计算方向角
@@ -421,12 +424,14 @@ class EnhancedPositionEncoding(nn.Module):
         """
         # 1. 生成多尺度高斯响应
         multi_scale_response = self.generate_multi_scale_gaussian(reference_points)
+
+        # mlp_response = self.mlp(reference_points)
         
         # 2. 融合多尺度信息
-        scale_features = self.scale_fusion(multi_scale_response)  # [bs, num_queries, hidden_dim]
+        # scale_features = self.scale_fusion(multi_scale_response)  # [bs, num_queries, hidden_dim]
         
         # 3. 添加层归一化
-        pos_embed = self.proj(scale_features)
+        pos_embed = self.proj(multi_scale_response)
         
         return pos_embed
 

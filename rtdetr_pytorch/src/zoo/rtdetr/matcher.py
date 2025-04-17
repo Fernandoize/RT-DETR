@@ -14,7 +14,10 @@ from torch import nn
 from .box_ops import box_cxcywh_to_xyxy, generalized_box_iou
 
 from src.core import register
+from src.zoo.loss.wasserstein_loss import WassersteinLoss
 
+
+# TODO 从onetomany入手，增加训练阶段的one to many, 预测阶段不需要one to many
 
 @register
 class HungarianMatcher(nn.Module):
@@ -36,9 +39,11 @@ class HungarianMatcher(nn.Module):
             cost_giou: This is the relative weight of the giou loss of the bounding box in the matching cost
         """
         super().__init__()
+        # 分类损失、边界框损失、iou损失
         self.cost_class = weight_dict['cost_class']
         self.cost_bbox = weight_dict['cost_bbox']
         self.cost_giou = weight_dict['cost_giou']
+        self.wasserstein_loss = WassersteinLoss()
 
         self.use_focal_loss = use_focal_loss
         self.alpha = alpha
@@ -69,14 +74,17 @@ class HungarianMatcher(nn.Module):
         """
         bs, num_queries = outputs["pred_logits"].shape[:2]
 
+        # 1. 打平，合并batch_size和num_queries维度, softmax预测结果
         # We flatten to compute the cost matrices in a batch
         if self.use_focal_loss:
             out_prob = F.sigmoid(outputs["pred_logits"].flatten(0, 1))
         else:
             out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)
 
+        # 2. 合并batch_size和num_queries维度,
         out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
 
+        # 3. 获取target 标签和bbox
         # Also concat the target labels and boxes
         if out_prob.shape[-1] == 2:
             tgt_ids = torch.cat([v["labels"] for v in targets])
@@ -86,6 +94,7 @@ class HungarianMatcher(nn.Module):
             tgt_ids = torch.cat([v["labels"] for v in targets])
             tgt_bbox = torch.cat([v["boxes"] for v in targets])
 
+        # 4. 计算focal_loss
         # Compute the classification cost. Contrary to the loss, we don't use the NLL,
         # but approximate it in 1 - proba[target class].
         # The 1 is a constant that doesn't change the matching, it can be ommitted.
@@ -97,18 +106,26 @@ class HungarianMatcher(nn.Module):
         else:
             cost_class = -out_prob[:, tgt_ids]
 
+        # 5. 计算box l1 loss
         # Compute the L1 cost between boxes
         cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
 
+        # 6. 计算giou_loss
         # Compute the giou cost betwen boxes
         cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox))
+        # cost_giou = self.wasserstein_loss(out_bbox, tgt_bbox) + cost_giou
 
+        # 7. 计算最终的二分匹配质量分数
         # Compute quality loss
         # Final cost matrix
         C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
         C = C.view(bs, num_queries, -1).cpu()
 
+        # 8. 获取目标框的数量，将成本矩阵C按照size大小进行分割，每个分割对应一个目标的预测框和真实框的成本矩阵
+        # 对每个分割的成本矩阵c[i]使用匈牙利算法(linear_sum_assigment)进行匹配，这个算法会返回一个最优的匹配结果，通常是最小化总成本
+        # 每一列代表某个目标与所有query计算出来的成本大小
         sizes = [len(v["boxes"]) for v in targets]
+        # indice包含每个目标框的匹配结果
         indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
 
         return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]

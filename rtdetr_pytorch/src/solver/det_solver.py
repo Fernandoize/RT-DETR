@@ -32,17 +32,17 @@ class DetSolver(BaseSolver):
         best_stat = {'epoch': -1, }
 
         yaml_cfg = args.yaml_cfg
-        if not yaml_cfg['wandb_name'] or not yaml_cfg['wandb_resume']:
-            raise Exception("please config wandb_name or wandb_resume")
+        if not yaml_cfg['wandb_name']:
+            raise Exception("please config wandb_name")
 
         # Initialize wandb
         if dist.is_main_process() and yaml_cfg['use_wandb']:
             wandb.init(
-                project="rtdetr",  # 项目名称
+                project="fast_valid",  # 项目名称
                 name=yaml_cfg['wandb_name'],  # 实验名称
                 config=args,  # 记录配置参数
                 dir=str(self.output_dir),  # 日志保存目录
-                resume=yaml_cfg['wandb_resume']
+                resume=bool(yaml_cfg['wandb_resume'])
             )
             # 记录模型结构
             wandb.watch(self.model, log="all", log_freq=100)
@@ -82,13 +82,13 @@ class DetSolver(BaseSolver):
             if should_save and self.output_dir:
                 checkpoint_paths = [self.output_dir / 'checkpoint.pth']
                 # 额外保存一个带epoch编号的checkpoint
-                checkpoint_paths.append(self.output_dir / f'checkpoint{epoch:04}.pth')
+                # checkpoint_paths.append(self.output_dir / f'checkpoint{epoch:04}.pth')
                 for checkpoint_path in checkpoint_paths:
                     dist.save_on_master(self.state_dict(epoch), checkpoint_path)
                     
                 # 保存最佳模型到wandb
-                if dist.is_main_process():
-                    wandb.save(str(checkpoint_paths[0]))
+                # if dist.is_main_process():
+                #     wandb.save(str(checkpoint_paths[0]))
             
             print('best_stat: ', best_stat)
 
