@@ -10,7 +10,7 @@ __include__: [
 
 use_wandb: True
 wandb_name: fast_valid
-wandb_resume: false
+wandb_id: 10001
 
 num_classes: 4
 remap_mscoco_category: False

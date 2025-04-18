@@ -35,14 +35,18 @@ class DetSolver(BaseSolver):
         if not yaml_cfg['wandb_name']:
             raise Exception("please config wandb_name")
 
+        if not yaml_cfg['wandb_id']:
+            raise Exception("please config wandb_id")
+
         # Initialize wandb
         if dist.is_main_process() and yaml_cfg['use_wandb']:
             wandb.init(
                 project="fast_valid",  # 项目名称
                 name=yaml_cfg['wandb_name'],  # 实验名称
+                id=yaml_cfg['wandb_id'],
                 config=args,  # 记录配置参数
                 dir=str(self.output_dir),  # 日志保存目录
-                resume=bool(yaml_cfg['wandb_resume'])
+                resume='auto'
             )
             # 记录模型结构
             wandb.watch(self.model, log="all", log_freq=100)
