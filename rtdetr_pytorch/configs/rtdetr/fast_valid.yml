@@ -10,7 +10,7 @@ __include__: [
 
 use_wandb: True
 wandb_name: fast_valid
-wandb_id: 10001
+wandb_id: "10001"
 
 num_classes: 4
 remap_mscoco_category: False
@@ -63,7 +63,7 @@ val_dataloader:
         - {type: ConvertImageDtype}
 
   shuffle: False
-  batch_size: 4
+  batch_size: 8
   num_workers: 0
   drop_last: False
   collate_fn: default_collate_fn
@@ -88,7 +88,7 @@ HybridEncoder:
   use_fpn: False
   dropout: 0.1
   eval_spatial_size: [320, 320]
-  use_encoder_idx: [0, 1, 2]
+  use_encoder_idx: [1]
 
 RTDETRTransformer:
   # dim 设置为64
@@ -97,7 +97,7 @@ RTDETRTransformer:
   eval_idx: -1
   # decoder 设置1层
   num_decoder_layers: 1
-#  num_denoising: 0
+  num_denoising: 100
   learnt_init_query: False
   dropout: 0.1
   eval_spatial_size: [320, 320]
@@ -136,6 +136,6 @@ SetCriterion:
   matcher:
     type: HungarianMatcher
     weight_dict: { cost_class: 2, cost_bbox: 5, cost_giou: 2}
-    use_focal_loss: True
+    use_focal_loss: False
     alpha: 0.25
     gamma: 2.0

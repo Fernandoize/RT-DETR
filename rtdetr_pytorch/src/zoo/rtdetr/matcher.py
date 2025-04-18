@@ -43,7 +43,7 @@ class HungarianMatcher(nn.Module):
         self.cost_class = weight_dict['cost_class']
         self.cost_bbox = weight_dict['cost_bbox']
         self.cost_giou = weight_dict['cost_giou']
-        self.wasserstein_loss = WassersteinLoss()
+        # self.wasserstein_loss = WassersteinLoss()
 
         self.use_focal_loss = use_focal_loss
         self.alpha = alpha

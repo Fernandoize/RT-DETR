@@ -43,7 +43,7 @@ class SetCriterion(nn.Module):
         self.matcher = matcher
         self.weight_dict = weight_dict
         self.losses = losses
-        self.wasserstein_loss = WassersteinLoss()
+        # self.wasserstein_loss = WassersteinLoss()
 
         empty_weight = torch.ones(self.num_classes + 1)
         empty_weight[-1] = eos_coef
