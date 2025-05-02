@@ -284,10 +284,6 @@ class TransformerDecoder(nn.Module):
             # 注意：参考点的位置在不断的更新，因此 query_pos_embed 也在不断编码，其会作为最终的损失
             ref_points_input = ref_points_detach.unsqueeze(2)
             # 查询的位置编码是通过参考点生成的， dino中 ref_points_detach 先生成了正弦位置编码，然后才计算的embed
-            # query_pos_embed = query_pos_head(
-            #     reference_points=ref_points_detach,
-            #     memory=memory
-            # )
             query_pos_embed = query_pos_head(ref_points_detach)
 
             # query_pos_embed 为query中添加位置信息,
@@ -329,15 +325,6 @@ class EnhancedPositionEncoding(nn.Module):
             nn.LayerNorm(hidden_dim),
             nn.GELU()
         )
-
-        # 第一个分支：中心点坐标预测
-        self.center_mlp = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 2),  # 输出2维坐标(x,y)
-            nn.Sigmoid()  # 使用sigmoid将坐标归一化到[0,1]
-        )
         
         # 第二个分支：缩放因子预测
         self.scale_mlp = nn.Sequential(
@@ -355,15 +342,6 @@ class EnhancedPositionEncoding(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, 4),  # 输出4维坐标(x,y,w,h)
             nn.Sigmoid()  # 使用sigmoid将坐标归一化到[0,1]
-        )
-        
-        # 门控机制：用于融合第一个和第三个分支
-        self.gate = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid()  # 输出门控信号
         )
         
         # 将2维坐标转换为hidden_dim维特征
@@ -393,16 +371,6 @@ class EnhancedPositionEncoding(nn.Module):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0)
                 
-        # 初始化center_mlp
-        for m in self.center_mlp.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.weight, 1.0)
-                nn.init.constant_(m.bias, 0)
-                
         # 初始化scale_mlp
         for m in self.scale_mlp.modules():
             if isinstance(m, nn.Linear):
@@ -415,16 +383,6 @@ class EnhancedPositionEncoding(nn.Module):
                 
         # 初始化bbox_mlp
         for m in self.bbox_mlp.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.weight, 1.0)
-                nn.init.constant_(m.bias, 0)
-                
-        # 初始化gate
-        for m in self.gate.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
@@ -465,27 +423,17 @@ class EnhancedPositionEncoding(nn.Module):
         # 将4维坐标转换为hidden_dim维特征
         query = self.input_proj(query)  # [bs, num_queries, hidden_dim]
         
-        # 第一个分支：预测中心点坐标
-        center_coords = self.center_mlp(query)  # [bs, num_queries, 2]
-        
-        # 第二个分支：预测缩放因子
+        # 预测缩放因子
         scale_factor = self.scale_mlp(query)  # [bs, num_queries, 1]
         
-        # 第三个分支：预测边界框坐标
+        # 预测边界框坐标
         bbox_pred = self.bbox_mlp(query)  # [bs, num_queries, 4]
         
-        # 生成门控信号
-        gate_signal = self.gate(query)  # [bs, num_queries, 1]
+        # 从边界框预测中提取中心点坐标
+        center_coords = bbox_pred[..., :2]  # [bs, num_queries, 2]
         
-        # 使用门控机制融合第一个和第三个分支的中心点信息
-        # 从bbox_pred中提取中心点坐标
-        bbox_center = bbox_pred[..., :2]  # [bs, num_queries, 2]
-        
-        # 门控融合：g * center_coords + (1-g) * bbox_center
-        fused_center = gate_signal * center_coords + (1 - gate_signal) * bbox_center
-        
-        # 将融合后的中心点坐标和缩放因子结合
-        scaled_center = fused_center * scale_factor
+        # 将中心点坐标和缩放因子结合
+        scaled_center = center_coords * scale_factor
         
         # 将2维坐标转换为hidden_dim维特征
         pos_embed = self.coord_proj(scaled_center)  # [bs, num_queries, hidden_dim]
@@ -493,7 +441,7 @@ class EnhancedPositionEncoding(nn.Module):
         # 最终投影
         pos_embed = self.proj(pos_embed)
         
-        return pos_embed
+        return pos_embed, bbox_pred
 
 
 @register
@@ -503,6 +451,7 @@ class RTDETRTransformer(nn.Module):
                  num_classes=80,
                  hidden_dim=256,
                  num_queries=300,
+                 num_learnable_queries=100,  # 新增：学习查询的数量
                  position_embed_type='sine',
                  feat_channels=[512, 1024, 2048],
                  feat_strides=[8, 16, 32],
@@ -520,7 +469,10 @@ class RTDETRTransformer(nn.Module):
                  eval_spatial_size=None,
                  eval_idx=-1,
                  eps=1e-2,
-                 aux_loss=True):
+                 aux_loss=True,
+                 cost_class=2.0,
+                 cost_bbox=5.0,
+                 cost_giou=2.0):
 
         super(RTDETRTransformer, self).__init__()
         assert position_embed_type in ['sine', 'learned'], \
@@ -536,18 +488,22 @@ class RTDETRTransformer(nn.Module):
         self.num_levels = num_levels
         self.num_classes = num_classes
         self.num_queries = num_queries
-        # self.query_count = 0
+        self.num_learnable_queries = num_learnable_queries
+        self.num_dynamic_queries = num_queries - num_learnable_queries  # 动态查询的数量
         self.eps = eps
         self.num_decoder_layers = num_decoder_layers
         self.eval_spatial_size = eval_spatial_size
         self.aux_loss = aux_loss
+        
+        # 损失权重
+        self.cost_class = cost_class
+        self.cost_bbox = cost_bbox
+        self.cost_giou = cost_giou
 
-        # backbone feature projection： 将来自于backbone的特征投影到统一的维度 hidden_dim
+        # backbone feature projection
         self._build_input_proj_layer(feat_channels)
 
-        # 解码器
-        # Transformer module 每层包含自注意力机制和交叉注意力机制
-        # TODO 只在某些层使用DAT
+        # decoder
         decoder_layer = TransformerDecoderLayer(hidden_dim, nhead, dim_feedforward, dropout, activation, num_levels, num_decoder_points)
         self.decoder = TransformerDecoder(hidden_dim, decoder_layer, num_decoder_layers, eval_idx)
 
@@ -555,38 +511,37 @@ class RTDETRTransformer(nn.Module):
         self.label_noise_ratio = label_noise_ratio
         self.box_noise_scale = box_noise_scale
 
-        # 用于去噪训练中的类别嵌入
         # denoising part
         if num_denoising > 0:
-            # self.denoising_class_embed = nn.Embedding(num_classes, hidden_dim, padding_idx=num_classes-1) # TODO for load paddle weights
             self.denoising_class_embed = nn.Embedding(num_classes+1, hidden_dim, padding_idx=num_classes)
 
-        # decoder embedding
-        self.learnt_init_query = learnt_init_query
-        if learnt_init_query:
-            self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
-        # self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
-        self.query_pos_head = EnhancedPositionEncoding(
-            hidden_dim=hidden_dim,
+        # 学习查询的嵌入
+        self.learnable_queries = nn.Embedding(num_learnable_queries, hidden_dim)
+        
+        # 动态查询生成器
+        self.dynamic_query_generator = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim)
         )
+        
+        # 位置编码
+        self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
 
-        # 编码器
-        # encoder head: 对编码器进一步处理，生成编码器的最终输出
-        # layernorm可以尝试替换为hekaiming最新提出的模块或者dw卷积
+        # encoder
         self.enc_output = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim,)
         )
 
-        # 生成类别分数和边界框坐标
-        # TODO 添加一个物体数量预测头，根据预测的数量作为权重保留query
-        self.enc_score_head = nn.Linear(hidden_dim, num_classes)  # Changed to binary classification (background/foreground)
+        # 二分类头（前景/背景）
+        self.enc_score_head = nn.Linear(hidden_dim, 2)
         self.enc_bbox_head = MLP(hidden_dim, hidden_dim, 4, num_layers=3)
 
         # decoder head
-        # 解码器的输出：类别分数、边界框坐标、边界框质量
         self.dec_score_head = nn.ModuleList([
-            nn.Linear(hidden_dim, num_classes)  # Keep multi-class classification
+            nn.Linear(hidden_dim, num_classes)
             for _ in range(num_decoder_layers)
         ])
         self.dec_quality_head = nn.ModuleList([
@@ -598,7 +553,6 @@ class RTDETRTransformer(nn.Module):
             for _ in range(num_decoder_layers)
         ])
 
-        # init encoder output anchors and valid_mask
         if self.eval_spatial_size:
             self.anchors, self.valid_mask = self._generate_anchors()
 
@@ -619,10 +573,21 @@ class RTDETRTransformer(nn.Module):
             init.constant_(reg_.layers[-1].bias, 0)
         # linear_init_(self.enc_output[0])
         init.xavier_uniform_(self.enc_output[0].weight)
-        if self.learnt_init_query:
-            init.xavier_uniform_(self.tgt_embed.weight)
-        # init.xavier_uniform_(self.query_pos_head.layers[0].weight)
-        # init.xavier_uniform_(self.query_pos_head.layers[1].weight)
+        # 初始化学习查询
+        init.xavier_uniform_(self.learnable_queries.weight)
+
+        # 初始化动态查询生成器
+        for m in self.dynamic_query_generator.modules():
+            if isinstance(m, nn.Linear):
+                init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                init.constant_(m.weight, 1.0)
+                init.constant_(m.bias, 0)
+
+        init.xavier_uniform_(self.query_pos_head.layers[0].weight)
+        init.xavier_uniform_(self.query_pos_head.layers[1].weight)
 
 
     def _build_input_proj_layer(self, feat_channels):
@@ -710,91 +675,79 @@ class RTDETRTransformer(nn.Module):
 
         return anchors, valid_mask
 
-    def _get_decoder_input(self,
-                           # 编码器输出
-                           memory,
-                           # 特征图的形状
-                           spatial_shapes,
-                           # 去噪训练中的类别嵌入
-                           denoising_class=None,
-                           # 去噪训练中未激活的边界框
-                           denoising_bbox_unact=None):
-        """
-        准备解码器的输入数据：为解码器生成目标特征、参考点、边界框和类别分数
-        """
+    def _get_decoder_input(self, memory, spatial_shapes, denoising_class=None, denoising_bbox_unact=None):
         bs, _, _ = memory.shape
-        # prepare input for decoder
-        # 1.生成参考点，仅在训练时或 eval_spatial_size未设置时生成
+        
+        # 1. 生成参考点
         if self.training or self.eval_spatial_size is None:
             anchors, valid_mask = self._generate_anchors(spatial_shapes, device=memory.device)
         else:
             anchors, valid_mask = self.anchors.to(memory.device), self.valid_mask.to(memory.device)
 
-        # memory = torch.where(valid_mask, memory, 0)
-        # 将token中边界值也置为0
-        memory = valid_mask.to(memory.dtype) * memory  # TODO fix type error for onnx export
-
+        memory = valid_mask.to(memory.dtype) * memory
         output_memory = self.enc_output(memory)
 
-        # 每个token输出一个classes和bboxes
-        enc_outputs_class = self.enc_score_head(output_memory)  # Shape: [bs, num_tokens, 2]
-
-        # 参考点是encoder输出的token    + anchors获得的, enc_bbox_head 输出的是偏移量offset, 表示相对于锚点的调整值
-        # 直接预测坐标会导致训练不稳定，尤其是目标尺度变化较大时，预测偏移量则可以更好的约束模型的学习范围，使其更容易收敛
+        # 2. 生成动态查询
+        # 2.1 计算前景概率
+        enc_outputs_class = self.enc_score_head(output_memory)
+        probs = F.softmax(enc_outputs_class, dim=-1)
+        foreground_probs = probs[:, :, 1]
+        
+        # 2.2 选择top-k动态查询
+        _, topk_ind = torch.topk(foreground_probs, self.num_dynamic_queries, dim=1)
+        
+        # 2.3 生成动态查询特征
+        dynamic_queries = output_memory.gather(dim=1, 
+            index=topk_ind.unsqueeze(-1).repeat(1, 1, output_memory.shape[-1]))
+        dynamic_queries = self.dynamic_query_generator(dynamic_queries)
+        
+        # 2.4 获取动态查询的参考点
         enc_outputs_coord_unact = self.enc_bbox_head(output_memory) + anchors
-
-        # 2. topk query select & 归一化得到 reference_points_unact
-        # 选择出预测可能性最大的topk class index
-        if enc_outputs_class.shape[-1] == 2:  # Binary classification case
-            # 对于二分类，分别计算背景和前景的概率
-            # enc_outputs_class shape: [bs, num_tokens, 2]
-            # 使用softmax计算每个类别的概率
-            probs = F.softmax(enc_outputs_class, dim=-1)  # Shape: [bs, num_tokens, 2]
-            # 获取前景概率（索引1）
-            foreground_probs = probs[:, :, 1] # Shape: [bs, num_tokens]
-            # 使用topk选择前景概率最高的num_queries个query
-            _, topk_ind = torch.topk(foreground_probs, self.num_queries, dim=1)
-        else:  # Multi-class classification case
-            # 使用原有的topk选择方式
-            _, topk_ind = torch.topk(enc_outputs_class.max(-1).values, self.num_queries, dim=1)
-
-        # 参考点 & 归一化
-        # 根据参考点取出对应的值
-        reference_points_unact = enc_outputs_coord_unact.gather(dim=1, \
+        dynamic_ref_points = enc_outputs_coord_unact.gather(dim=1,
             index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_outputs_coord_unact.shape[-1]))
-
+        
+        # 2.5 获取动态查询的类别分数
+        dynamic_logits = enc_outputs_class.gather(dim=1,
+            index=topk_ind.unsqueeze(-1).repeat(1, 1, 2))
+        
+        # 3. 获取学习查询
+        learnable_queries = self.learnable_queries.weight.unsqueeze(0).tile([bs, 1, 1])
+        
+        # 4. 生成学习查询的参考点（使用均匀分布）
+        learnable_ref_points = torch.rand(bs, self.num_learnable_queries, 4, 
+            device=memory.device, dtype=memory.dtype)
+        
+        # 5. 为学习查询生成类别分数（使用均匀分布）
+        learnable_logits = torch.rand(bs, self.num_learnable_queries, 2,
+            device=memory.device, dtype=memory.dtype)
+        # 使用softmax确保概率和为1
+        learnable_logits = F.softmax(learnable_logits, dim=-1)
+        
+        # 6. 合并查询
+        target = torch.cat([learnable_queries, dynamic_queries], dim=1)
+        
+        # 7. 合并参考点
+        reference_points_unact = torch.cat([learnable_ref_points, dynamic_ref_points], dim=1)
+        
+        # 8. 合并类别分数
+        enc_topk_logits = torch.cat([learnable_logits, dynamic_logits], dim=1)
+        
+        # 9. 获取边界框预测
         enc_topk_bboxes = F.sigmoid(reference_points_unact)
         if denoising_bbox_unact is not None:
-            reference_points_unact = torch.concat(
-                [denoising_bbox_unact, reference_points_unact], 1)
-
-        # 对于二分类，我们只需要前景类别的分数
-        enc_topk_logits = enc_outputs_class.gather(dim=1, \
-            index=topk_ind.unsqueeze(-1).repeat(1, 1, 2))  # Shape: [bs, num_queries, 2]
-
-        # extract region features
-        # TODO Topk位置聚合
-        if self.learnt_init_query:
-            target = self.tgt_embed.weight.unsqueeze(0).tile([bs, 1, 1])
-        else:
-            target = output_memory.gather(dim=1, \
-                index=topk_ind.unsqueeze(-1).repeat(1, 1, output_memory.shape[-1]))
-            target = target.detach()
-
+            reference_points_unact = torch.cat([denoising_bbox_unact, reference_points_unact], 1)
+        
+        # 10. 处理去噪训练
         if denoising_class is not None:
-            target = torch.concat([denoising_class, target], 1)
+            target = torch.cat([denoising_class, target], 1)
 
         return target, reference_points_unact.detach(), enc_topk_bboxes, enc_topk_logits
 
-
     def forward(self, feats, targets=None):
-
         # input projection and embedding
-        # 1. 获取编码器的输出
         (memory, spatial_shapes, level_start_index) = self._get_encoder_input(feats)
 
         # prepare denoising training
-        # 2. 生成去噪训练所需的对比样本。
         if self.training and self.num_denoising > 0:
             denoising_class, denoising_bbox_unact, attn_mask, dn_meta = \
                 get_contrastive_denoising_training_group(targets, \
@@ -807,11 +760,11 @@ class RTDETRTransformer(nn.Module):
         else:
             denoising_class, denoising_bbox_unact, attn_mask, dn_meta = None, None, None, None
 
-        # 3. 准备解码器的输出
+        # prepare decoder input
         target, init_ref_points_unact, enc_topk_bboxes, enc_topk_logits = \
             self._get_decoder_input(memory, spatial_shapes, denoising_class, denoising_bbox_unact)
 
-        # decoder 4. 解码器
+        # decoder
         out_bboxes, out_logits = self.decoder(
             target,
             init_ref_points_unact,
@@ -911,4 +864,5 @@ class BottleneckGate(nn.Module):
         # 融合
         fused_output = g * x1 + (1 - g) * x2
         # 层归一化
+        return self.norm(fused_output)
         return self.norm(fused_output)
