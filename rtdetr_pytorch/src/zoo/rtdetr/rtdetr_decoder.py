@@ -536,6 +536,8 @@ class RTDETRTransformer(nn.Module):
         self.num_levels = num_levels
         self.num_classes = num_classes
         self.num_queries = num_queries
+        self.num_learn_query = int(self.num_queries/3)
+        self.num_topk_query = int(self.num_queries - self.num_learn_query)
         # self.query_count = 0
         self.eps = eps
         self.num_decoder_layers = num_decoder_layers
@@ -564,7 +566,7 @@ class RTDETRTransformer(nn.Module):
         # decoder embedding
         self.learnt_init_query = learnt_init_query
         # if learnt_init_query:
-        self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
+        self.tgt_embed = nn.Embedding(self.num_learn_query, hidden_dim)
         self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
         # self.query_pos_head = EnhancedPositionEncoding(
         #     hidden_dim=hidden_dim,
@@ -782,12 +784,10 @@ class RTDETRTransformer(nn.Module):
                 index=topk_ind.unsqueeze(-1).repeat(1, 1, output_memory.shape[-1]))
         topk_target = topk_target.detach()
 
-        num_learn_query = int(self.num_queries/3)
-        num_topk_query = int(self.num_queries - num_learn_query)
         if denoising_class is not None:
-            target = torch.concat([denoising_class, learn_target[:,:num_learn_query,:], topk_target[:,:num_topk_query,:]], 1)
+            target = torch.concat([denoising_class, topk_target[:,:self.num_topk_query,:],learn_target], 1)
         else:
-            target = torch.concat([learn_target[:,:num_learn_query,:], topk_target[:,:num_topk_query,:]], 1)
+            target = torch.concat([topk_target[:,:self.num_topk_query,:], learn_target], 1)
         return target, reference_points_unact.detach(), enc_topk_bboxes, enc_topk_logits
 
 
