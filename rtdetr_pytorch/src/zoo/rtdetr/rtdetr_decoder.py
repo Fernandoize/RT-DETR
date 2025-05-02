@@ -563,8 +563,8 @@ class RTDETRTransformer(nn.Module):
 
         # decoder embedding
         self.learnt_init_query = learnt_init_query
-        if learnt_init_query:
-            self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
+        # if learnt_init_query:
+        self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
         self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
         # self.query_pos_head = EnhancedPositionEncoding(
         #     hidden_dim=hidden_dim,
@@ -619,8 +619,8 @@ class RTDETRTransformer(nn.Module):
             init.constant_(reg_.layers[-1].bias, 0)
         # linear_init_(self.enc_output[0])
         init.xavier_uniform_(self.enc_output[0].weight)
-        if self.learnt_init_query:
-            init.xavier_uniform_(self.tgt_embed.weight)
+        # if self.learnt_init_query:
+        init.xavier_uniform_(self.tgt_embed.weight)
         init.xavier_uniform_(self.query_pos_head.layers[0].weight)
         init.xavier_uniform_(self.query_pos_head.layers[1].weight)
 
@@ -774,16 +774,20 @@ class RTDETRTransformer(nn.Module):
 
         # extract region features
         # TODO Topk位置聚合
-        if self.learnt_init_query:
-            target = self.tgt_embed.weight.unsqueeze(0).tile([bs, 1, 1])
-        else:
-            target = output_memory.gather(dim=1, \
+        # if self.learnt_init_query:
+        learn_target = self.tgt_embed.weight.unsqueeze(0).tile([bs, 1, 1])
+        learn_target = learn_target.detach()
+        # else:
+        topk_target = output_memory.gather(dim=1, \
                 index=topk_ind.unsqueeze(-1).repeat(1, 1, output_memory.shape[-1]))
-            target = target.detach()
+        topk_target = topk_target.detach()
 
+        num_learn_query = int(self.num_queries/3)
+        num_topk_query = int(self.num_queries - num_learn_query)
         if denoising_class is not None:
-            target = torch.concat([denoising_class, target], 1)
-
+            target = torch.concat([denoising_class, learn_target[:,:num_learn_query,:], topk_target[:,:num_topk_query,:]], 1)
+        else:
+            target = torch.concat([learn_target[:,:num_learn_query,:], topk_target[:,:num_topk_query,:]], 1)
         return target, reference_points_unact.detach(), enc_topk_bboxes, enc_topk_logits
 
 
