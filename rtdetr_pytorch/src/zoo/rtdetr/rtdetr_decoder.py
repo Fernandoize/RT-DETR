@@ -175,14 +175,12 @@ class TransformerDecoderLayer(nn.Module):
 
         # cross attention
         self.cross_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_head, num_levels=n_levels, num_points=n_points)
-        # self.cross_attn = MSDeformableAttention(d_model, n_head, n_levels, n_points)
         self.dropout2 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
-        # gate
-        # 门控机制gate来控制信息流 于控制自注意力和交叉注意力输出之间的信息流
-        # self.gateway = BottleneckGate(d_model)
-        # self.gateway2 = BottleneckGate(d_model)
+        # 用于处理拼接后的维度
+        self.linear_q1 = nn.Linear(d_model * 2, d_model)
+        self.linear_q2 = nn.Linear(d_model * 2, d_model)
 
         # ffn
         self.linear1 = nn.Linear(d_model, dim_feedforward)
@@ -192,16 +190,20 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout4 = nn.Dropout(dropout)
         self.norm3 = nn.LayerNorm(d_model)
 
-        # self._reset_parameters()
+        self._reset_parameters()
 
-    # def _reset_parameters(self):
-    #     linear_init_(self.linear1)
-    #     linear_init_(self.linear2)
-    #     xavier_uniform_(self.linear1.weight)
-    #     xavier_uniform_(self.linear2.weight)
+    def _reset_parameters(self):
+        # 初始化线性层
+        init.xavier_uniform_(self.linear_q1.weight)
+        init.xavier_uniform_(self.linear_q2.weight)
+        init.constant_(self.linear_q1.bias, 0)
+        init.constant_(self.linear_q2.bias, 0)
 
-    def with_pos_embed(self, tensor, pos):
-        return tensor if pos is None else tensor + pos
+    def with_pos_embed(self, tensor, pos, proj):
+        if pos is None:
+            return tensor
+        # 将位置编码和输入张量在最后一个维度上拼接
+        return proj(torch.cat([tensor, pos], dim=-1))
 
     def forward_ffn(self, tgt):
         return self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
@@ -216,14 +218,8 @@ class TransformerDecoderLayer(nn.Module):
                 memory_mask=None,
                 query_pos_embed=None):
         # self attention
-        q = k = self.with_pos_embed(tgt, query_pos_embed)
-
-        # if attn_mask is not None:
-        #     attn_mask = torch.where(
-        #         attn_mask.to(torch.bool),
-        #         torch.zeros_like(attn_mask),
-        #         torch.full_like(attn_mask, float('-inf'), dtype=tgt.dtype))
-
+        q = k = self.with_pos_embed(tgt, query_pos_embed, self.linear_q1)
+        # 由于拼接操作改变了维度，需要调整线性层的输入维度
         tgt2, _ = self.self_attn(q, k, value=tgt, attn_mask=attn_mask)
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
@@ -231,7 +227,7 @@ class TransformerDecoderLayer(nn.Module):
         # cross attention
         tgt2, _ = self.cross_attn(
             # query 中包含了位置信息
-            self.with_pos_embed(tgt, query_pos_embed),
+            self.with_pos_embed(tgt, query_pos_embed, self.linear_q2),
             # 参考点
             reference_points,
             # k,v token
@@ -330,15 +326,6 @@ class EnhancedPositionEncoding(nn.Module):
             nn.GELU()
         )
 
-        # 第一个分支：中心点坐标预测
-        self.center_mlp = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 2),  # 输出2维坐标(x,y)
-            nn.Sigmoid()  # 使用sigmoid将坐标归一化到[0,1]
-        )
-        
         # 第二个分支：缩放因子预测
         self.scale_mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
@@ -356,16 +343,7 @@ class EnhancedPositionEncoding(nn.Module):
             nn.Linear(hidden_dim, 4),  # 输出4维坐标(x,y,w,h)
             nn.Sigmoid()  # 使用sigmoid将坐标归一化到[0,1]
         )
-        
-        # 门控机制：用于融合第一个和第三个分支
-        self.gate = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid()  # 输出门控信号
-        )
-        
+
         # 将2维坐标转换为hidden_dim维特征
         self.coord_proj = nn.Sequential(
             nn.Linear(2, hidden_dim),
@@ -392,17 +370,7 @@ class EnhancedPositionEncoding(nn.Module):
             elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0)
-                
-        # 初始化center_mlp
-        for m in self.center_mlp.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.weight, 1.0)
-                nn.init.constant_(m.bias, 0)
-                
+
         # 初始化scale_mlp
         for m in self.scale_mlp.modules():
             if isinstance(m, nn.Linear):
@@ -464,28 +432,15 @@ class EnhancedPositionEncoding(nn.Module):
         """
         # 将4维坐标转换为hidden_dim维特征
         query = self.input_proj(query)  # [bs, num_queries, hidden_dim]
-        
-        # 第一个分支：预测中心点坐标
-        center_coords = self.center_mlp(query)  # [bs, num_queries, 2]
-        
+
         # 第二个分支：预测缩放因子
         scale_factor = self.scale_mlp(query)  # [bs, num_queries, 1]
         
         # 第三个分支：预测边界框坐标
         bbox_pred = self.bbox_mlp(query)  # [bs, num_queries, 4]
-        
-        # 生成门控信号
-        gate_signal = self.gate(query)  # [bs, num_queries, 1]
-        
-        # 使用门控机制融合第一个和第三个分支的中心点信息
-        # 从bbox_pred中提取中心点坐标
-        bbox_center = bbox_pred[..., :2]  # [bs, num_queries, 2]
-        
-        # 门控融合：g * center_coords + (1-g) * bbox_center
-        fused_center = gate_signal * center_coords + (1 - gate_signal) * bbox_center
-        
+
         # 将融合后的中心点坐标和缩放因子结合
-        scaled_center = fused_center * scale_factor
+        scaled_center = bbox_pred * scale_factor
         
         # 将2维坐标转换为hidden_dim维特征
         pos_embed = self.coord_proj(scaled_center)  # [bs, num_queries, hidden_dim]
@@ -621,8 +576,8 @@ class RTDETRTransformer(nn.Module):
         init.xavier_uniform_(self.enc_output[0].weight)
         if self.learnt_init_query:
             init.xavier_uniform_(self.tgt_embed.weight)
-        init.xavier_uniform_(self.query_pos_head.layers[0].weight)
-        init.xavier_uniform_(self.query_pos_head.layers[1].weight)
+        # init.xavier_uniform_(self.query_pos_head.layers[0].weight)
+        # init.xavier_uniform_(self.query_pos_head.layers[1].weight)
 
 
     def _build_input_proj_layer(self, feat_channels):
