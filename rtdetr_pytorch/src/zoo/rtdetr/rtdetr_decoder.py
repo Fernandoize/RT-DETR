@@ -319,22 +319,58 @@ class TransformerDecoder(nn.Module):
 
 
 class EnhancedPositionEncoding(nn.Module):
-    def __init__(self, hidden_dim, num_scales=4, num_heads=8):
+    def __init__(self, hidden_dim):
         super().__init__()
         self.hidden_dim = hidden_dim
-        self.num_scales = num_scales
-        
-        # 可学习的高斯参数
-        self.sigmas = nn.Parameter(torch.ones(num_scales))  # 不同尺度的sigma
-        self.centers = nn.Parameter(torch.zeros(num_scales, 2))  # 不同尺度的中心点
-        
-        # 多尺度特征融合
-        self.scale_fusion = nn.Sequential(
-            nn.Linear(num_scales, hidden_dim),
+
+        # 将4维坐标转换为hidden_dim维特征
+        self.input_proj = nn.Sequential(
+            nn.Linear(4, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU()
+        )
+
+        # 第一个分支：中心点坐标预测
+        self.center_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
+            nn.Linear(hidden_dim, 2),  # 输出2维坐标(x,y)
+            nn.Sigmoid()  # 使用sigmoid将坐标归一化到[0,1]
+        )
+        
+        # 第二个分支：缩放因子预测
+        self.scale_mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim)
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid()  # 使用sigmoid将缩放因子归一化到[0,1]
+        )
+        
+        # 第三个分支：边界框坐标预测
+        self.bbox_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 4),  # 输出4维坐标(x,y,w,h)
+            nn.Sigmoid()  # 使用sigmoid将坐标归一化到[0,1]
+        )
+        
+        # 门控机制：用于融合第一个和第三个分支
+        self.gate = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid()  # 输出门控信号
+        )
+        
+        # 将2维坐标转换为hidden_dim维特征
+        self.coord_proj = nn.Sequential(
+            nn.Linear(2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU()
         )
         
         # 位置编码的最终投影
@@ -342,28 +378,13 @@ class EnhancedPositionEncoding(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim)
         )
-
-        # self.mlp = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
         
         # 初始化网络参数
         self._reset_parameters()
         
     def _reset_parameters(self):
-        # 为不同尺度设置不同的初始sigma
-        sigmas = torch.linspace(0.5, 2.0, self.num_scales)
-        with torch.no_grad():
-            self.sigmas.copy_(sigmas)
-        
-        # 为中心点设置不同的初始位置
-        # 分别初始化x和y坐标
-        centers_x = torch.rand(self.num_scales) * 0.2 - 0.1  # 在[-0.1, 0.1]范围内随机初始化
-        centers_y = torch.rand(self.num_scales) * 0.2 - 0.1
-        with torch.no_grad():
-            self.centers[:, 0] = centers_x
-            self.centers[:, 1] = centers_y
-        
-        # 初始化scale_fusion模块
-        for m in self.scale_fusion.modules():
+        # 初始化input_proj
+        for m in self.input_proj.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
@@ -371,8 +392,58 @@ class EnhancedPositionEncoding(nn.Module):
             elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0)
-        
-        # 初始化proj模块
+                
+        # 初始化center_mlp
+        for m in self.center_mlp.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0)
+                
+        # 初始化scale_mlp
+        for m in self.scale_mlp.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0)
+                
+        # 初始化bbox_mlp
+        for m in self.bbox_mlp.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0)
+                
+        # 初始化gate
+        for m in self.gate.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0)
+                
+        # 初始化coord_proj
+        for m in self.coord_proj.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0)
+                
+        # 初始化proj
         for m in self.proj.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -381,57 +452,46 @@ class EnhancedPositionEncoding(nn.Module):
             elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0)
-
-        # 初始化mlp
-        # init.xavier_uniform_(self.mlp.layers[0].weight)
-        # init.xavier_uniform_(self.mlp.layers[1].weight)
-        
-    def gaussian_response(self, points, center, sigma):
-        # 考虑方向性的距离计算, 输入数据与高斯函数的中心位置的接近程度
-        diff = points - center
-        distance = torch.sum(diff**2, dim=-1)
-        direction = torch.atan2(diff[..., 1], diff[..., 0])  # 计算方向角
-        return torch.exp(-distance / (2 * sigma**2)) * (1 + 0.1 * torch.cos(direction))
     
-    def generate_multi_scale_gaussian(self, reference_points):
+    def forward(self, query):
         """
-        生成多尺度高斯响应
-        reference_points: [bs, num_queries, 4] (x,y,w,h)
+        Args:
+            query: [bs, num_queries, 4] (x,y,w,h)
+            
+        Returns:
+            pos_embed: [bs, num_queries, hidden_dim]
+            bbox_pred: [bs, num_queries, 4]
         """
-        bs, num_queries, _ = reference_points.shape
-        center_points = reference_points[..., :2]  # [bs, num_queries, 2]
+        # 将4维坐标转换为hidden_dim维特征
+        query = self.input_proj(query)  # [bs, num_queries, hidden_dim]
         
-        # 为每个尺度生成高斯响应
-        gaussian_responses = []
-        for i in range(self.num_scales):
-            # 使用当前尺度的sigma和中心点
-            response = self.gaussian_response(
-                center_points.reshape(-1, 2),  # 展平所有点
-                self.centers[i],  # 当前尺度的中心点
-                self.sigmas[i]    # 当前尺度的sigma
-            )
-            gaussian_responses.append(response.reshape(bs, num_queries, 1))
+        # 第一个分支：预测中心点坐标
+        center_coords = self.center_mlp(query)  # [bs, num_queries, 2]
         
-        # 堆叠多尺度响应 [bs, num_queries, num_scales]
-        multi_scale_response = torch.cat(gaussian_responses, dim=-1)
+        # 第二个分支：预测缩放因子
+        scale_factor = self.scale_mlp(query)  # [bs, num_queries, 1]
         
-        return multi_scale_response
-    
-    def forward(self, reference_points, memory):
-        """
-        reference_points: [bs, num_queries, 4] (x,y,w,h)
-        memory: [bs, num_tokens, hidden_dim] 编码器的输出特征
-        """
-        # 1. 生成多尺度高斯响应
-        multi_scale_response = self.generate_multi_scale_gaussian(reference_points)
-
-        # mlp_response = self.mlp(reference_points)
+        # 第三个分支：预测边界框坐标
+        bbox_pred = self.bbox_mlp(query)  # [bs, num_queries, 4]
         
-        # 2. 融合多尺度信息
-        # scale_features = self.scale_fusion(multi_scale_response)  # [bs, num_queries, hidden_dim]
+        # 生成门控信号
+        gate_signal = self.gate(query)  # [bs, num_queries, 1]
         
-        # 3. 添加层归一化
-        pos_embed = self.proj(multi_scale_response)
+        # 使用门控机制融合第一个和第三个分支的中心点信息
+        # 从bbox_pred中提取中心点坐标
+        bbox_center = bbox_pred[..., :2]  # [bs, num_queries, 2]
+        
+        # 门控融合：g * center_coords + (1-g) * bbox_center
+        fused_center = gate_signal * center_coords + (1 - gate_signal) * bbox_center
+        
+        # 将融合后的中心点坐标和缩放因子结合
+        scaled_center = fused_center * scale_factor
+        
+        # 将2维坐标转换为hidden_dim维特征
+        pos_embed = self.coord_proj(scaled_center)  # [bs, num_queries, hidden_dim]
+        
+        # 最终投影
+        pos_embed = self.proj(pos_embed)
         
         return pos_embed
 
@@ -505,12 +565,10 @@ class RTDETRTransformer(nn.Module):
         self.learnt_init_query = learnt_init_query
         if learnt_init_query:
             self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
-        self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
-        # self.query_pos_head = EnhancedPositionEncoding(
-        #     hidden_dim=hidden_dim,
-        #     num_scales=4,
-        #     num_heads=nhead
-        # )
+        # self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
+        self.query_pos_head = EnhancedPositionEncoding(
+            hidden_dim=hidden_dim,
+        )
 
         # 编码器
         # encoder head: 对编码器进一步处理，生成编码器的最终输出
@@ -563,8 +621,8 @@ class RTDETRTransformer(nn.Module):
         init.xavier_uniform_(self.enc_output[0].weight)
         if self.learnt_init_query:
             init.xavier_uniform_(self.tgt_embed.weight)
-        init.xavier_uniform_(self.query_pos_head.layers[0].weight)
-        init.xavier_uniform_(self.query_pos_head.layers[1].weight)
+        # init.xavier_uniform_(self.query_pos_head.layers[0].weight)
+        # init.xavier_uniform_(self.query_pos_head.layers[1].weight)
 
 
     def _build_input_proj_layer(self, feat_channels):
