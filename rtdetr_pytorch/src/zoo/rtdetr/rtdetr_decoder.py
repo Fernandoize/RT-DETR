@@ -565,10 +565,10 @@ class RTDETRTransformer(nn.Module):
         self.learnt_init_query = learnt_init_query
         if learnt_init_query:
             self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
-        # self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
-        self.query_pos_head = EnhancedPositionEncoding(
-            hidden_dim=hidden_dim,
-        )
+        self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, num_layers=2)
+        # self.query_pos_head = EnhancedPositionEncoding(
+        #     hidden_dim=hidden_dim,
+        # )
 
         # 编码器
         # encoder head: 对编码器进一步处理，生成编码器的最终输出
@@ -621,8 +621,8 @@ class RTDETRTransformer(nn.Module):
         init.xavier_uniform_(self.enc_output[0].weight)
         if self.learnt_init_query:
             init.xavier_uniform_(self.tgt_embed.weight)
-        # init.xavier_uniform_(self.query_pos_head.layers[0].weight)
-        # init.xavier_uniform_(self.query_pos_head.layers[1].weight)
+        init.xavier_uniform_(self.query_pos_head.layers[0].weight)
+        init.xavier_uniform_(self.query_pos_head.layers[1].weight)
 
 
     def _build_input_proj_layer(self, feat_channels):
