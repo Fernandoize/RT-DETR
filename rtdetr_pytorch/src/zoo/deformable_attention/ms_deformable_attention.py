@@ -112,7 +112,7 @@ def deformable_attention_core_func_gqa(
 
 class MSDeformableAttentionGQA(nn.Module): # Renamed class
     def __init__(self, embed_dim=256, num_heads=8, num_kv_heads=None, # Added num_kv_heads
-                 num_levels=4, num_points=4):
+                 num_levels=4, num_points=4, use_dynamic_range=False):
         """
         Multi-Scale Deformable Attention Module with GQA support
         Args:
@@ -121,6 +121,7 @@ class MSDeformableAttentionGQA(nn.Module): # Renamed class
             num_kv_heads (int): Number of Key/Value heads. If None, defaults to num_heads (standard MHA).
             num_levels (int): Number of feature levels.
             num_points (int): Number of sampling points per query per feature level.
+            use_dynamic_range (bool): Whether to use dynamic range prediction. Defaults to False.
         """
         super().__init__()
         if embed_dim % num_heads != 0:
@@ -140,6 +141,7 @@ class MSDeformableAttentionGQA(nn.Module): # Renamed class
         self.num_levels = num_levels
         self.num_points = num_points
         self.total_points = num_heads * num_levels * num_points # Based on Query heads
+        self.use_dynamic_range = use_dynamic_range
 
         self.head_dim = embed_dim // num_heads
         self.kv_embed_dim = self.num_kv_heads * self.head_dim # Dimension for K/V projection
@@ -154,10 +156,27 @@ class MSDeformableAttentionGQA(nn.Module): # Renamed class
         # Output projection takes the combined output (embed_dim)
         self.output_proj = nn.Linear(embed_dim, embed_dim)
 
+        # Add range predictor if dynamic range is enabled
+        if self.use_dynamic_range:
+            # Predict x and y ranges separately
+            self.range_predictor_x = nn.Linear(embed_dim, num_heads)
+            self.range_predictor_y = nn.Linear(embed_dim, num_heads)
+            self._reset_range_predictor()
+
         # Use the GQA-adapted core function
         self.ms_deformable_attn_core = deformable_attention_core_func_gqa
 
         self._reset_parameters()
+
+    def _reset_range_predictor(self):
+        """Initialize range predictor parameters"""
+        # Initialize x range predictor
+        init.constant_(self.range_predictor_x.weight, 0)
+        init.constant_(self.range_predictor_x.bias, 0.5)  # Initialize to middle range
+        
+        # Initialize y range predictor
+        init.constant_(self.range_predictor_y.weight, 0)
+        init.constant_(self.range_predictor_y.bias, 0.5)  # Initialize to middle range
 
     def _reset_parameters(self):
         # sampling_offsets (depends on num_heads)
@@ -183,10 +202,6 @@ class MSDeformableAttentionGQA(nn.Module): # Renamed class
         init.xavier_uniform_(self.output_proj.weight)
         init.constant_(self.output_proj.bias, 0)
 
-
-    # todo 在query中添加位置编码embedding; 四维坐标，并在decoder每一层对齐优化 来自于 DAB-DETR: Dynamic Anchor Boxes are Better Queries for DETR
-    # Mixed Query Selection
-    # Mixed Query Selection： content query, position query, denoise query
     def forward(self,
                 query,              # [bs, query_length, C]
                 reference_points,   # [bs, query_length, n_levels, 2] or [bs, query_length, n_levels, 4]
@@ -203,7 +218,6 @@ class MSDeformableAttentionGQA(nn.Module): # Renamed class
         # Ensure value_spatial_shapes is a tensor
         if isinstance(value_spatial_shapes, list):
              value_spatial_shapes = torch.as_tensor(value_spatial_shapes, dtype=torch.long, device=query.device)
-
 
         # Project value to kv_embed_dim
         value = self.value_proj(value) # [bs, value_length, kv_embed_dim]
@@ -230,6 +244,22 @@ class MSDeformableAttentionGQA(nn.Module): # Renamed class
         # Reshape weights: [bs, query_length, n_heads, n_levels, n_points]
         attention_weights = attention_weights.reshape(
             bs, Len_q, self.num_heads, self.num_levels, self.num_points)
+
+        # Apply dynamic range prediction if enabled
+        if self.use_dynamic_range:
+            # Predict x and y attention ranges separately: [bs, query_length, n_heads]
+            attention_range_x = torch.sigmoid(self.range_predictor_x(query))
+            attention_range_y = torch.sigmoid(self.range_predictor_y(query))
+            
+            # Reshape for broadcasting: [bs, query_length, n_heads, 1, 1, 1]
+            attention_range_x = attention_range_x.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            attention_range_y = attention_range_y.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            
+            # Create a new tensor for scaled offsets instead of modifying inplace
+            scaled_offsets = torch.zeros_like(sampling_offsets)
+            scaled_offsets[..., 0] = sampling_offsets[..., 0] * attention_range_x.squeeze(-1)  # x direction
+            scaled_offsets[..., 1] = sampling_offsets[..., 1] * attention_range_y.squeeze(-1)  # y direction
+            sampling_offsets = scaled_offsets
 
         # Prepare sampling locations based on reference points and offsets
         if reference_points.shape[-1] == 2: # Top-left (0,0), bottom-right (1,1) format

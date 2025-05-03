@@ -165,7 +165,7 @@ class TransformerDecoderLayer(nn.Module):
                  n_points=4,
                  n_kv_head=2,
                  use_gqa=False,
-                 ):
+                 use_dynamic_range=False):
         super(TransformerDecoderLayer, self).__init__()
 
         # self attention
@@ -174,8 +174,7 @@ class TransformerDecoderLayer(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
 
         # cross attention
-        self.cross_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_head, num_levels=n_levels, num_points=n_points)
-        # self.cross_attn = MSDeformableAttention(d_model, n_head, n_levels, n_points)
+        self.cross_attn = MSDeformableAttentionGQA(d_model, n_head, num_kv_heads=n_head, num_levels=n_levels, num_points=n_points, use_dynamic_range=use_dynamic_range)
         self.dropout2 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
@@ -520,7 +519,8 @@ class RTDETRTransformer(nn.Module):
                  eval_spatial_size=None,
                  eval_idx=-1,
                  eps=1e-2,
-                 aux_loss=True):
+                 aux_loss=True,
+                 use_dynamic_range=False):
 
         super(RTDETRTransformer, self).__init__()
         assert position_embed_type in ['sine', 'learned'], \
@@ -543,6 +543,7 @@ class RTDETRTransformer(nn.Module):
         self.num_decoder_layers = num_decoder_layers
         self.eval_spatial_size = eval_spatial_size
         self.aux_loss = aux_loss
+        self.use_dynamic_range = use_dynamic_range
 
         # backbone feature projection： 将来自于backbone的特征投影到统一的维度 hidden_dim
         self._build_input_proj_layer(feat_channels)
@@ -591,10 +592,6 @@ class RTDETRTransformer(nn.Module):
             nn.Linear(hidden_dim, num_classes)  # Keep multi-class classification
             for _ in range(num_decoder_layers)
         ])
-        self.dec_quality_head = nn.ModuleList([
-            nn.Linear(hidden_dim, 1)
-            for _ in range(num_decoder_layers)
-        ])
         self.dec_bbox_head = nn.ModuleList([
             MLP(hidden_dim, hidden_dim, 4, num_layers=3)
             for _ in range(num_decoder_layers)
@@ -613,10 +610,8 @@ class RTDETRTransformer(nn.Module):
         init.constant_(self.enc_bbox_head.layers[-1].weight, 0)
         init.constant_(self.enc_bbox_head.layers[-1].bias, 0)
 
-        for cls_, reg_, quality_ in zip(self.dec_score_head, self.dec_bbox_head,
-                                                      self.dec_quality_head):
+        for cls_, reg_ in zip(self.dec_score_head, self.dec_bbox_head):
             init.constant_(cls_.bias, bias)
-            init.constant_(quality_.bias, bias)
             init.constant_(reg_.layers[-1].weight, 0)
             init.constant_(reg_.layers[-1].bias, 0)
         # linear_init_(self.enc_output[0])
