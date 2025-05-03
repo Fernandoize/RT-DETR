@@ -1,0 +1,699 @@
+_criterion:
+    value: |-
+        SetCriterion(
+          (matcher): HungarianMatcher()
+        )
+_ema:
+    value: <src.optim.ema.ModelEMA object at 0x7f055bafbe90>
+_lr_scheduler:
+    value: <torch.optim.lr_scheduler.MultiStepLR object at 0x7f055b9929c0>
+_model:
+    value: |-
+        RTDETR(
+          (backbone): PResNet(
+            (conv1): Sequential(
+              (conv1_1): ConvNormLayer(
+                (conv): Conv2d(3, 32, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+                (norm): BatchNorm2d(32, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                (act): ReLU(inplace=True)
+              )
+              (conv1_2): ConvNormLayer(
+                (conv): Conv2d(32, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                (norm): BatchNorm2d(32, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                (act): ReLU(inplace=True)
+              )
+              (conv1_3): ConvNormLayer(
+                (conv): Conv2d(32, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                (norm): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                (act): ReLU(inplace=True)
+              )
+            )
+            (res_layers): ModuleList(
+              (0): Blocks(
+                (blocks): ModuleList(
+                  (0): BasicBlock(
+                    (short): ConvNormLayer(
+                      (conv): Conv2d(64, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+                      (norm): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): Identity()
+                    )
+                    (branch2a): ConvNormLayer(
+                      (conv): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): ReLU(inplace=True)
+                    )
+                    (branch2b): ConvNormLayer(
+                      (conv): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): Identity()
+                    )
+                    (act): ReLU(inplace=True)
+                  )
+                  (1): BasicBlock(
+                    (branch2a): ConvNormLayer(
+                      (conv): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): ReLU(inplace=True)
+                    )
+                    (branch2b): ConvNormLayer(
+                      (conv): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): Identity()
+                    )
+                    (act): ReLU(inplace=True)
+                  )
+                )
+              )
+              (1): Blocks(
+                (blocks): ModuleList(
+                  (0): BasicBlock(
+                    (short): Sequential(
+                      (pool): AvgPool2d(kernel_size=2, stride=2, padding=0)
+                      (conv): ConvNormLayer(
+                        (conv): Conv2d(64, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+                        (norm): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                        (act): Identity()
+                      )
+                    )
+                    (branch2a): ConvNormLayer(
+                      (conv): Conv2d(64, 128, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): ReLU(inplace=True)
+                    )
+                    (branch2b): ConvNormLayer(
+                      (conv): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): Identity()
+                    )
+                    (act): ReLU(inplace=True)
+                  )
+                  (1): BasicBlock(
+                    (branch2a): ConvNormLayer(
+                      (conv): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): ReLU(inplace=True)
+                    )
+                    (branch2b): ConvNormLayer(
+                      (conv): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): Identity()
+                    )
+                    (act): ReLU(inplace=True)
+                  )
+                )
+              )
+              (2): Blocks(
+                (blocks): ModuleList(
+                  (0): BasicBlock(
+                    (short): Sequential(
+                      (pool): AvgPool2d(kernel_size=2, stride=2, padding=0)
+                      (conv): ConvNormLayer(
+                        (conv): Conv2d(128, 256, kernel_size=(1, 1), stride=(1, 1), bias=False)
+                        (norm): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                        (act): Identity()
+                      )
+                    )
+                    (branch2a): ConvNormLayer(
+                      (conv): Conv2d(128, 256, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): ReLU(inplace=True)
+                    )
+                    (branch2b): ConvNormLayer(
+                      (conv): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): Identity()
+                    )
+                    (act): ReLU(inplace=True)
+                  )
+                  (1): BasicBlock(
+                    (branch2a): ConvNormLayer(
+                      (conv): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): ReLU(inplace=True)
+                    )
+                    (branch2b): ConvNormLayer(
+                      (conv): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): Identity()
+                    )
+                    (act): ReLU(inplace=True)
+                  )
+                )
+              )
+              (3): Blocks(
+                (blocks): ModuleList(
+                  (0): BasicBlock(
+                    (short): Sequential(
+                      (pool): AvgPool2d(kernel_size=2, stride=2, padding=0)
+                      (conv): ConvNormLayer(
+                        (conv): Conv2d(256, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
+                        (norm): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                        (act): Identity()
+                      )
+                    )
+                    (branch2a): ConvNormLayer(
+                      (conv): Conv2d(256, 512, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): ReLU(inplace=True)
+                    )
+                    (branch2b): ConvNormLayer(
+                      (conv): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): Identity()
+                    )
+                    (act): ReLU(inplace=True)
+                  )
+                  (1): BasicBlock(
+                    (branch2a): ConvNormLayer(
+                      (conv): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): ReLU(inplace=True)
+                    )
+                    (branch2b): ConvNormLayer(
+                      (conv): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+                      (norm): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+                      (act): Identity()
+                    )
+                    (act): ReLU(inplace=True)
+                  )
+                )
+              )
+            )
+          )
+          (decoder): RTDETRTransformer(
+            (input_proj): ModuleList(
+              (0-2): 3 x Sequential(
+                (conv): Conv2d(256, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
+                (norm): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+              )
+            )
+            (decoder): TransformerDecoder(
+              (layers): ModuleList(
+                (0-2): 3 x TransformerDecoderLayer(
+                  (self_attn): MultiheadAttention(
+                    (out_proj): NonDynamicallyQuantizableLinear(in_features=512, out_features=512, bias=True)
+                  )
+                  (dropout1): Dropout(p=0.0, inplace=False)
+                  (norm1): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                  (cross_attn): MSDeformableAttentionGQA(
+                    (sampling_offsets): Linear(in_features=512, out_features=192, bias=True)
+                    (attention_weights): Linear(in_features=512, out_features=96, bias=True)
+                    (value_proj): Linear(in_features=512, out_features=512, bias=True)
+                    (output_proj): Linear(in_features=512, out_features=512, bias=True)
+                  )
+                  (dropout2): Dropout(p=0.0, inplace=False)
+                  (norm2): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                  (linear1): Linear(in_features=512, out_features=1024, bias=True)
+                  (dropout3): Dropout(p=0.0, inplace=False)
+                  (linear2): Linear(in_features=1024, out_features=512, bias=True)
+                  (dropout4): Dropout(p=0.0, inplace=False)
+                  (norm3): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                )
+              )
+            )
+            (denoising_class_embed): Embedding(5, 512, padding_idx=4)
+            (tgt_embed): Embedding(133, 512)
+            (query_pos_head): MLP(
+              (layers): ModuleList(
+                (0): Linear(in_features=4, out_features=1024, bias=True)
+                (1): Linear(in_features=1024, out_features=512, bias=True)
+              )
+              (act): ReLU(inplace=True)
+            )
+            (enc_output): Sequential(
+              (0): Linear(in_features=512, out_features=512, bias=True)
+              (1): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+            (enc_score_head): Linear(in_features=512, out_features=4, bias=True)
+            (enc_bbox_head): MLP(
+              (layers): ModuleList(
+                (0-1): 2 x Linear(in_features=512, out_features=512, bias=True)
+                (2): Linear(in_features=512, out_features=4, bias=True)
+              )
+              (act): ReLU(inplace=True)
+            )
+            (dec_score_head): ModuleList(
+              (0-2): 3 x Linear(in_features=512, out_features=4, bias=True)
+            )
+            (dec_quality_head): ModuleList(
+              (0-2): 3 x Linear(in_features=512, out_features=1, bias=True)
+            )
+            (dec_bbox_head): ModuleList(
+              (0-2): 3 x MLP(
+                (layers): ModuleList(
+                  (0-1): 2 x Linear(in_features=512, out_features=512, bias=True)
+                  (2): Linear(in_features=512, out_features=4, bias=True)
+                )
+                (act): ReLU(inplace=True)
+              )
+            )
+          )
+          (encoder): HybridEncoder(
+            (input_proj): ModuleList(
+              (0): Sequential(
+                (0): Conv2d(128, 256, kernel_size=(1, 1), stride=(1, 1), bias=False)
+                (1): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+              )
+              (1): Sequential(
+                (0): Conv2d(256, 256, kernel_size=(1, 1), stride=(1, 1), bias=False)
+                (1): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+              )
+              (2): Sequential(
+                (0): Conv2d(512, 256, kernel_size=(1, 1), stride=(1, 1), bias=False)
+                (1): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+              )
+            )
+            (cross_encoder): ModuleList(
+              (0-2): 3 x CrossAttentionEncoder(
+                (layers): ModuleList(
+                  (0): CrossAttentionEncoderLayer(
+                    (self_attn): MSDeformableAttentionGQA(
+                      (sampling_offsets): Linear(in_features=256, out_features=64, bias=True)
+                      (attention_weights): Linear(in_features=256, out_features=32, bias=True)
+                      (value_proj): Linear(in_features=256, out_features=256, bias=True)
+                      (output_proj): Linear(in_features=256, out_features=256, bias=True)
+                    )
+                    (cross_attn): MSDeformableAttentionGQA(
+                      (sampling_offsets): Linear(in_features=256, out_features=192, bias=True)
+                      (attention_weights): Linear(in_features=256, out_features=96, bias=True)
+                      (value_proj): Linear(in_features=256, out_features=256, bias=True)
+                      (output_proj): Linear(in_features=256, out_features=256, bias=True)
+                    )
+                    (linear1): Linear(in_features=256, out_features=1024, bias=True)
+                    (dropout): Dropout(p=0.0, inplace=False)
+                    (linear2): Linear(in_features=1024, out_features=256, bias=True)
+                    (norm1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+                    (norm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+                    (norm3): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+                    (norm4): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+                    (dropout1): Dropout(p=0.0, inplace=False)
+                    (dropout2): Dropout(p=0.0, inplace=False)
+                    (dropout3): Dropout(p=0.0, inplace=False)
+                    (dropout4): Dropout(p=0.0, inplace=False)
+                    (activation): GELU(approximate='none')
+                  )
+                )
+              )
+            )
+          )
+        )
+_optimizer:
+    value: |-
+        AdamW (
+        Parameter Group 0
+            amsgrad: False
+            betas: [0.9, 0.999]
+            capturable: False
+            differentiable: False
+            eps: 1e-08
+            foreach: None
+            fused: None
+            initial_lr: 1e-05
+            lr: 1e-05
+            maximize: False
+            weight_decay: 0.0
+
+        Parameter Group 1
+            amsgrad: False
+            betas: [0.9, 0.999]
+            capturable: False
+            differentiable: False
+            eps: 1e-08
+            foreach: None
+            fused: None
+            initial_lr: 1e-05
+            lr: 1e-05
+            maximize: False
+            weight_decay: 0.0001
+
+        Parameter Group 2
+            amsgrad: False
+            betas: [0.9, 0.999]
+            capturable: False
+            differentiable: False
+            eps: 1e-08
+            foreach: None
+            fused: None
+            initial_lr: 0.0001
+            lr: 0.0001
+            maximize: False
+            weight_decay: 0.0
+
+        Parameter Group 3
+            amsgrad: False
+            betas: [0.9, 0.999]
+            capturable: False
+            differentiable: False
+            eps: 1e-08
+            foreach: None
+            fused: None
+            initial_lr: 0.0001
+            lr: 0.0001
+            maximize: False
+            weight_decay: 0.0001
+        )
+_output_dir:
+    value: ./output/rtdetr_r18vd_6x_coco
+_postprocessor:
+    value: RTDETRPostProcessor(use_focal_loss=True, num_classes=4, num_top_queries=300)
+_print_freq:
+    value: null
+_scaler:
+    value: null
+_train_batch_size:
+    value: null
+_train_dataloader:
+    value: |-
+        DataLoader(
+            dataset: Dataset CocoDetection
+            Number of datapoints: 1820
+            Root location: ./configs/dataset/dfui/images/
+             img_folder: ./configs/dataset/dfui/images/
+             ann_file: ./configs/dataset/dfui/annotations/instances_train2017.json
+             return_masks: False
+             transforms:
+               Compose(
+                  RandomPhotometricDistort(brightness=(0.875, 1.125), contrast=(0.5, 1.5), hue=(-0.05, 0.05), saturation=(0.5, 1.5), p=0.5)
+                  RandomZoomOut(p=0.5, fill=0, side_range=(1.0, 4.0))
+                  RandomIoUCrop(min_scale=0.3, max_scale=1, min_aspect_ratio=0.5, max_aspect_ratio=2, options=[0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0], trials=40, p=0.8)
+                  SanitizeBoundingBoxes(min_size=1, labels_getter=default)
+                  RandomHorizontalFlip(p=0.5)
+                  Resize(size=[640, 640], interpolation=InterpolationMode.BILINEAR, antialias=True)
+                  ToImage()
+                  ConvertImageDtype()
+                  SanitizeBoundingBoxes(min_size=1, labels_getter=default)
+                  ConvertBox(out_fmt=cxcywh, normalize=True)
+            )
+            batch_size: 8
+            num_workers: 4
+            drop_last: True
+            collate_fn: <function default_collate_fn at 0x7f0650b3b9c0>
+        )
+_train_shuffle:
+    value: null
+_val_batch_size:
+    value: null
+_val_dataloader:
+    value: |-
+        DataLoader(
+            dataset: Dataset CocoDetection
+            Number of datapoints: 419
+            Root location: configs/dataset/dfui/images/
+             img_folder: configs/dataset/dfui/images/
+             ann_file: configs/dataset/dfui/annotations/instances_val2017.json
+             return_masks: False
+             transforms:
+               Compose(
+                  Resize(size=[640, 640], interpolation=InterpolationMode.BILINEAR, antialias=True)
+                  ToImage()
+                  ConvertImageDtype()
+            )
+            batch_size: 8
+            num_workers: 4
+            drop_last: False
+            collate_fn: <function default_collate_fn at 0x7f0650b3b9c0>
+        )
+_val_shuffle:
+    value: null
+_wandb:
+    value:
+        cli_version: 0.19.8
+        m: []
+        python_version: 3.12.3
+        t:
+            "1":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 55
+                - 71
+            "2":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 55
+                - 71
+            "3":
+                - 1
+                - 2
+                - 13
+                - 14
+                - 16
+                - 23
+                - 55
+            "4": 3.12.3
+            "5": 0.19.8
+            "6": 4.49.0
+            "8":
+                - 5
+            "12": 0.19.8
+            "13": linux-x86_64
+batch_size:
+    value: null
+checkpoint_step:
+    value: 5
+clip_max_norm:
+    value: 0.1
+collate_fn:
+    value: null
+device:
+    value: cuda
+end_epoch:
+    value: null
+epoches:
+    value: 72
+evaluator:
+    value: null
+find_unused_parameters:
+    value: true
+last_epoch:
+    value: -1
+log_dir:
+    value: ./logs/
+log_step:
+    value: 100
+num_workers:
+    value: 0
+resume:
+    value: null
+sync_bn:
+    value: true
+task:
+    value: null
+train_dataset:
+    value: null
+tuning:
+    value: checkpoints/rtdetr_r18vd_dec3_6x_coco_from_paddle.pth
+use_amp:
+    value: false
+use_ema:
+    value: true
+val_dataset:
+    value: null
+yaml_cfg:
+    value:
+        __include__:
+            - ../dataset/coco_detection.yml
+            - ../runtime.yml
+            - ./include/dataloader.yml
+            - ./include/optimizer.yml
+            - ./include/rtdetr_r50vd.yml
+        HybridEncoder:
+            act: silu
+            deformable_encoder: true
+            depth_mult: 1
+            dim_feedforward: 1024
+            dropout: 0
+            enc_act: gelu
+            eval_spatial_size:
+                - 640
+                - 640
+            expansion: 0.5
+            feat_strides:
+                - 8
+                - 16
+                - 32
+            hidden_dim: 256
+            in_channels:
+                - 128
+                - 256
+                - 512
+            nhead: 8
+            num_encoder_layers: 1
+            pe_temperature: 10000
+            use_cross_attention: true
+            use_encoder_idx:
+                - 0
+                - 1
+                - 2
+            use_fpn: false
+            use_local_attention: false
+            use_self_attention: true
+        PResNet:
+            depth: 18
+            freeze_at: -1
+            freeze_norm: false
+            num_stages: 4
+            pretrained: true
+            return_idx:
+                - 1
+                - 2
+                - 3
+            variant: d
+        RTDETR:
+            backbone: PResNet
+            decoder: RTDETRTransformer
+            encoder: HybridEncoder
+            multi_scale:
+                - 480
+                - 512
+                - 544
+                - 576
+                - 608
+                - 640
+                - 640
+                - 640
+                - 672
+                - 704
+                - 736
+                - 768
+                - 800
+        RTDETRPostProcessor:
+            num_top_queries: 300
+        RTDETRTransformer:
+            eval_idx: -1
+            eval_spatial_size:
+                - 640
+                - 640
+            feat_channels:
+                - 256
+                - 256
+                - 256
+            feat_strides:
+                - 8
+                - 16
+                - 32
+            hidden_dim: 512
+            learnt_init_query: false
+            num_decoder_layers: 3
+            num_denoising: 100
+            num_levels: 3
+            num_queries: 400
+        SetCriterion:
+            alpha: 0.75
+            gamma: 2
+            losses:
+                - vfl
+                - boxes
+            matcher:
+                alpha: 0.25
+                gamma: 2
+                type: HungarianMatcher
+                use_focal_loss: true
+                weight_dict:
+                    cost_bbox: 5
+                    cost_class: 2
+                    cost_giou: 2
+            weight_dict:
+                loss_bbox: 5
+                loss_giou: 2
+                loss_vfl: 1
+        checkpoint_step: 5
+        clip_max_norm: 0.1
+        criterion: SetCriterion
+        ema:
+            decay: 0.9999
+            type: ModelEMA
+            warmups: 2000
+        epoches: 72
+        find_unused_parameters: true
+        fraction: 1
+        lr_scheduler:
+            gamma: 0.1
+            milestones:
+                - 1000
+            type: MultiStepLR
+        model: RTDETR
+        num_classes: 4
+        optimizer:
+            betas:
+                - 0.9
+                - 0.999
+            lr: 0.0001
+            params:
+                - lr: 1e-05
+                  params: ^(?=.*backbone)(?=.*norm).*$
+                  weight_decay: 0
+                - lr: 1e-05
+                  params: ^(?=.*backbone)(?!.*norm).*$
+                - params: ^(?=.*(?:encoder|decoder))(?=.*(?:norm|bias)).*$
+                  weight_decay: 0
+            type: AdamW
+            weight_decay: 0.0001
+        output_dir: ./output/rtdetr_r18vd_6x_coco
+        postprocessor: RTDETRPostProcessor
+        remap_mscoco_category: false
+        resume: null
+        scaler:
+            enabled: true
+            type: GradScaler
+        sync_bn: true
+        task: detection
+        train_dataloader:
+            batch_size: 8
+            collate_fn: default_collate_fn
+            dataset:
+                ann_file: ./configs/dataset/dfui/annotations/instances_train2017.json
+                img_folder: ./configs/dataset/dfui/images/
+                return_masks: false
+                transforms:
+                    ops:
+                        - p: 0.5
+                        - fill: 0
+                        - p: 0.8
+                        - min_size: 1
+                        - {}
+                        - size:
+                            - 640
+                            - 640
+                        - {}
+                        - {}
+                        - min_size: 1
+                        - normalize: true
+                          out_fmt: cxcywh
+                    type: Compose
+                type: CocoDetection
+            drop_last: true
+            num_workers: 4
+            pin_memory: true
+            shuffle: true
+            type: DataLoader
+        tuning: checkpoints/rtdetr_r18vd_dec3_6x_coco_from_paddle.pth
+        use_amp: false
+        use_ema: true
+        use_focal_loss: true
+        use_wandb: true
+        val_dataloader:
+            batch_size: 8
+            collate_fn: default_collate_fn
+            dataset:
+                ann_file: configs/dataset/dfui/annotations/instances_val2017.json
+                img_folder: configs/dataset/dfui/images/
+                transforms:
+                    ops:
+                        - size:
+                            - 640
+                            - 640
+                        - {}
+                        - {}
+                    type: Compose
+                type: CocoDetection
+            drop_last: false
+            num_workers: 4
+            pin_memory: true
+            shuffle: false
+            type: DataLoader
+        wandb_id: "10002"
+        wandb_name: detr_hybrid_query
