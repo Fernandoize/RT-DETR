@@ -227,10 +227,11 @@ class SetCriterion(nn.Module):
             'cardinality': self.loss_cardinality,
             'boxes': self.loss_boxes,
             'masks': self.loss_masks,
-
             'bce': self.loss_labels_bce,
             'focal': self.loss_labels_focal,
             'vfl': self.loss_labels_vfl,
+            'query_diversity': self.loss_query_diversity,
+            'spatial_consistency': self.loss_spatial_consistency,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
@@ -326,6 +327,72 @@ class SetCriterion(nn.Module):
                     torch.zeros(0, dtype=torch.int64,  device=device)))
         
         return dn_match_indices
+
+    def loss_spatial_consistency(self, outputs, targets, indices, num_boxes, log=True):
+        """
+        Encourage spatial consistency among predicted boxes.
+        """
+        pred_boxes = outputs['pred_boxes']  # [bs, num_queries, 4]
+        bs, num_queries, _ = pred_boxes.shape
+
+        # 只对未匹配的query计算一致性损失
+        idx = self._get_src_permutation_idx(indices)
+        mask = torch.ones((bs, num_queries), dtype=torch.bool, device=pred_boxes.device)
+        mask[idx] = False
+
+        # 取未匹配的预测框
+        consistency_loss = 0.
+        count = 0
+        for b in range(bs):
+            boxes = pred_boxes[b][mask[b]]  # [N, 4]
+            centers = boxes[:, :2]
+            sizes = boxes[:, 2:]
+            # 相邻中心点距离
+            center_dist = torch.sqrt(torch.sum(torch.pow(centers[1:] - centers[:-1], 2)))
+            # 相邻宽高比
+            size_ratio = (sizes[1:] / (sizes[:-1] + 1e-6)).clamp(0.5, 2.0)
+            size_consistency = (size_ratio - 1).abs().mean(-1)
+            # 总一致性损失
+            consistency_loss = consistency_loss + center_dist.mean() + size_consistency.mean()
+            count += 1
+        if count > 0:
+            consistency_loss = consistency_loss / count
+        else:
+            consistency_loss = torch.tensor(0., device=pred_boxes.device)
+        return {'loss_spatial_consistency': consistency_loss}
+
+    def loss_query_diversity(self, outputs, targets, indices, num_boxes, log=True):
+        """
+        Encourage diversity among predicted boxes (only for queries not matched to GT).
+        """
+        pred_boxes = outputs['pred_boxes']  # [bs, num_queries, 4]
+        bs, num_queries, _ = pred_boxes.shape
+
+        # 只对未匹配的query计算多样性损失
+        idx = self._get_src_permutation_idx(indices)
+        mask = torch.ones((bs, num_queries), dtype=torch.bool, device=pred_boxes.device)
+        mask[idx] = False  # 已匹配的query不参与多样性损失
+
+        # 取未匹配的预测框
+        unmatched_boxes = []
+        for b in range(bs):
+            if mask[b].sum() < 2:
+                continue
+            unmatched_boxes.append(pred_boxes[b][mask[b]])
+        if len(unmatched_boxes) == 0:
+            return {'loss_query_diversity': torch.tensor(0., device=pred_boxes.device)}
+
+        # 拼成一个大tensor
+        unmatched_boxes = torch.cat(unmatched_boxes, dim=0)  # [N_unmatched, 4]
+        if unmatched_boxes.shape[0] < 2:
+            return {'loss_query_diversity': torch.tensor(0., device=pred_boxes.device)}
+
+        # 计算两两L2距离
+        dist = torch.cdist(unmatched_boxes, unmatched_boxes, p=2)
+        # 只取非对角线元素
+        diversity_loss = -dist[~torch.eye(dist.size(0), dtype=torch.bool, device=dist.device)].mean()
+
+        return {'loss_query_diversity': diversity_loss}
 
 
 @torch.no_grad()

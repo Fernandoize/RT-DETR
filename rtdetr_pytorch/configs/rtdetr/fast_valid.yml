@@ -15,7 +15,7 @@ wandb_id: "10001"
 num_classes: 4
 remap_mscoco_category: False
 # 保证数据比例平衡
-fraction: 0.5
+fraction: 0.1
 
 train_dataloader:
   type: DataLoader
@@ -128,8 +128,8 @@ lr_scheduler:
   milestones: [5]
   gamma: 0.1
 SetCriterion:
-  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2}
-  losses: ['vfl', 'boxes']
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_query_diversity: 1, loss_spatial_consistency: 1, loss_giou: 2}
+  losses: ['vfl', 'boxes', 'query_diversity', 'spatial_consistency']
   alpha: 0.75
   gamma: 2.0
 
