@@ -41,7 +41,7 @@ class DetSolver(BaseSolver):
         # Initialize wandb
         if dist.is_main_process() and yaml_cfg['use_wandb']:
             wandb.init(
-                project="fast_valid",  # 项目名称
+                project="deformable_detr",  # 项目名称
                 name=yaml_cfg['wandb_name'],  # 实验名称
                 id=yaml_cfg['wandb_id'],
                 config=args,  # 记录配置参数
@@ -134,8 +134,8 @@ class DetSolver(BaseSolver):
         yaml_cfg = self.cfg.yaml_cfg
         if dist.is_main_process() and yaml_cfg['use_wandb']:
             wandb.init(
-                project="rtdetr_val",
-                name=f"val_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                project="deformable_detr_test",
+                name=f"test_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
                 config=self.cfg,
                 dir=str(self.output_dir),
             )
