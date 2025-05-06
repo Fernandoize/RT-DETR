@@ -1,6 +1,6 @@
 
 __include__: [
-  './deformable_detr_baseline.yml',
+  './1.deformable_detr_baseline.yml',
 ]
 
 use_wandb: True
