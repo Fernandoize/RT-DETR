@@ -1,0 +1,11 @@
+
+__include__: [
+  './include/deformable_detr_baseline.yml',
+]
+
+use_wandb: True
+wandb_name: deformable_detr_fpn
+wandb_id: "20003"
+
+HybridEncoder:
+  use_fpn: True

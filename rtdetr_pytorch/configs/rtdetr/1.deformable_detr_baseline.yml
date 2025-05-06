@@ -7,15 +7,15 @@ __include__: [
   './include/rtdetr_r50vd.yml',
 ]
 
+epoches: 100
 
 use_wandb: True
-wandb_name: fast_valid
-wandb_id: "10001"
+wandb_name: deformable_detr_baseline
+wandb_id: "20001"
 
 num_classes: 4
 remap_mscoco_category: False
-# 保证数据比例平衡
-fraction: 0.1
+fraction: 1
 
 train_dataloader:
   type: DataLoader
@@ -32,7 +32,7 @@ train_dataloader:
         - { type: RandomIoUCrop, p: 0.8 }
         - { type: SanitizeBoundingBoxes, min_size: 1 }
         - { type: RandomHorizontalFlip }
-        - { type: Resize, size: [ 320, 320 ], }
+        - { type: Resize, size: [ 640, 640 ], }
         # - {type: Resize, size: 639, max_size: 640}
         # - {type: PadToSize, spatial_size: 640}
         - {type: ToImage}
@@ -58,12 +58,12 @@ val_dataloader:
       ops:
         # - {type: Resize, size: 639, max_size: 640}
         # - {type: PadToSize, spatial_size: 640}
-        - { type: Resize, size: [ 320, 320 ], }
+        - { type: Resize, size: [ 640, 640 ], }
         - {type: ToImage}
         - {type: ConvertImageDtype}
 
   shuffle: False
-  batch_size: 8
+  batch_size: 4
   num_workers: 0
   drop_last: False
   collate_fn: default_collate_fn
@@ -79,54 +79,38 @@ PResNet:
 
 HybridEncoder:
   in_channels: [128, 256, 512]
-  hidden_dim: 64
+  hidden_dim: 256
   expansion: 0.5
-  deformable_encoder: True
-  use_cross_attention: True
+  deformable_encoder: False
+  use_cross_attention: False
   use_fpn: False
-  dropout: 0.1
-  eval_spatial_size: [320, 320]
-  use_encoder_idx: [1]
 
 RTDETRTransformer:
-  # dim 设置为64
-  feat_channels: [64, 64, 64]
-  hidden_dim: 64
   eval_idx: -1
-  # decoder 设置1层
-  num_decoder_layers: 1
+  num_decoder_layers: 3
   num_denoising: 100
   learnt_init_query: False
-  dropout: 0.1
-  eval_spatial_size: [320, 320]
-
-
-epoches: 10
 
 optimizer:
   type: AdamW
-  params:
-    -
-      params: 'backbone'
-      lr: 0.001
-    -
-      params: '^(?=.*encoder(?=.*bias|.*norm.*weight)).*$'
-      weight_decay: 0.001
-    -
-      params: '^(?=.*decoder(?=.*bias|.*norm.*weight)).*$'
+  params: 
+    - 
+      params: '^(?=.*backbone)(?=.*norm).*$'
+      lr: 0.00001
+      weight_decay: 0.
+    - 
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00001
+    - 
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bias)).*$'
       weight_decay: 0.
 
-  lr: 0.001
+  lr: 0.0001
   betas: [0.9, 0.999]
   weight_decay: 0.0001
 
-
-lr_scheduler:
-  type: MultiStepLR
-  milestones: [5]
-  gamma: 0.1
 SetCriterion:
-  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2}
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2 }
   losses: ['vfl', 'boxes']
   alpha: 0.75
   gamma: 2.0
@@ -134,6 +118,6 @@ SetCriterion:
   matcher:
     type: HungarianMatcher
     weight_dict: { cost_class: 2, cost_bbox: 5, cost_giou: 2}
-    use_focal_loss: False
+    use_focal_loss: True
     alpha: 0.25
     gamma: 2.0

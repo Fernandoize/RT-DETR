@@ -231,7 +231,6 @@ class SetCriterion(nn.Module):
             'focal': self.loss_labels_focal,
             'vfl': self.loss_labels_vfl,
             'query_diversity': self.loss_query_diversity,
-            'spatial_consistency': self.loss_spatial_consistency,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
