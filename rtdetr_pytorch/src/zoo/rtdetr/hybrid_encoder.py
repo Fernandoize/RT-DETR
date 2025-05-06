@@ -576,8 +576,7 @@ class HybridEncoder(nn.Module):
                 downsample_feat = self.downsample_convs[idx](feat_low)
                 out = self.pan_blocks[idx](torch.concat([downsample_feat, feat_high], dim=1))
                 outs.append(out)
-
-
+            return outs
         return proj_feats
 
 
