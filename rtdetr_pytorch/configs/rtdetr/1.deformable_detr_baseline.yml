@@ -84,6 +84,7 @@ HybridEncoder:
   deformable_encoder: False
   use_cross_attention: False
   use_fpn: False
+  use_encoder_idx: [1, 2]
 
 RTDETRTransformer:
   eval_idx: -1
