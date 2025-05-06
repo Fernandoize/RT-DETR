@@ -523,26 +523,6 @@ class HybridEncoder(nn.Module):
         assert len(feats) == len(self.in_channels)
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
 
-        if self.use_fpn:
-        # broadcasting and fusion
-            inner_outs = [proj_feats[-1]]
-            for idx in range(len(self.in_channels) - 1, 0, -1):
-                feat_high = inner_outs[0]
-                feat_low = proj_feats[idx - 1]
-                feat_high = self.lateral_convs[len(self.in_channels) - 1 - idx](feat_high)
-                inner_outs[0] = feat_high
-                upsample_feat = F.interpolate(feat_high, scale_factor=2., mode='nearest')
-                inner_out = self.fpn_blocks[len(self.in_channels)-1-idx](torch.concat([upsample_feat, feat_low], dim=1))
-                inner_outs.insert(0, inner_out)
-
-            outs = [inner_outs[0]]
-            for idx in range(len(self.in_channels) - 1):
-                feat_low = outs[-1]
-                feat_high = inner_outs[idx + 1]
-                downsample_feat = self.downsample_convs[idx](feat_low)
-                out = self.pan_blocks[idx](torch.concat([downsample_feat, feat_high], dim=1))
-                outs.append(out)
-
         # Cross attention between feature levels
         # Prepare memory for cross attention
         memory_list = []
@@ -575,6 +555,28 @@ class HybridEncoder(nn.Module):
                 memory_spatial_shapes=memory_spatial_shapes
             )
             proj_feats[enc_ind] = output.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()
+
+
+        if self.use_fpn:
+        # broadcasting and fusion
+            inner_outs = [proj_feats[-1]]
+            for idx in range(len(self.in_channels) - 1, 0, -1):
+                feat_high = inner_outs[0]
+                feat_low = proj_feats[idx - 1]
+                feat_high = self.lateral_convs[len(self.in_channels) - 1 - idx](feat_high)
+                inner_outs[0] = feat_high
+                upsample_feat = F.interpolate(feat_high, scale_factor=2., mode='nearest')
+                inner_out = self.fpn_blocks[len(self.in_channels)-1-idx](torch.concat([upsample_feat, feat_low], dim=1))
+                inner_outs.insert(0, inner_out)
+
+            outs = [inner_outs[0]]
+            for idx in range(len(self.in_channels) - 1):
+                feat_low = outs[-1]
+                feat_high = inner_outs[idx + 1]
+                downsample_feat = self.downsample_convs[idx](feat_low)
+                out = self.pan_blocks[idx](torch.concat([downsample_feat, feat_high], dim=1))
+                outs.append(out)
+
 
         return proj_feats
 
