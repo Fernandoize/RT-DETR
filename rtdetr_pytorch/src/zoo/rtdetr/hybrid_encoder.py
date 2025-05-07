@@ -504,7 +504,7 @@ class HybridEncoder(nn.Module):
                 self.lateral_convs.append(ConvNormLayer(hidden_dim, hidden_dim, 1, 1, act=act))
                 # 从上到下降维
                 self.fpn_blocks.append(
-                    CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
+                    FPNDeformableAttentionBlock(hidden_dim, num_heads=8, num_levels=1, num_points=4)
                 )
 
             # bottom-up pan
@@ -516,7 +516,7 @@ class HybridEncoder(nn.Module):
                     ConvNormLayer(hidden_dim, hidden_dim, 3, 2, act=act)
                 )
                 self.pan_blocks.append(
-                    CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
+                    FPNDeformableAttentionBlock(hidden_dim, num_heads=8, num_levels=1, num_points=4)
                 )
         self._reset_parameters()
 
@@ -714,3 +714,46 @@ class LocalAttention(nn.Module):
         # Final projection
         x = self.out_proj(x)
         return x
+
+class FPNDeformableAttentionBlock(nn.Module):
+    def __init__(self, embed_dim, num_heads=8, num_levels=1, num_points=4):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.num_levels = num_levels
+        self.num_points = num_points
+        self.attn = MSDeformableAttentionGQA(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_levels=num_levels,
+            num_points=num_points
+        )
+        self.norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, x):
+        # x: [B, C, H, W]
+        B, C, H, W = x.shape
+        x_flat = x.flatten(2).permute(0, 2, 1)  # [B, HW, C]
+        # 构造 reference_points 和 value_spatial_shapes
+        reference_points = self._get_reference_points(H, W, x.device, B)
+        value_spatial_shapes = torch.tensor([[H, W]], device=x.device)
+        out, _ = self.attn(
+            x_flat,  # query
+            reference_points,  # [B, HW, num_levels, 2]
+            x_flat,  # value
+            value_spatial_shapes  # [num_levels, 2]
+        )
+        out = self.norm(out)
+        out = out.permute(0, 2, 1).reshape(B, C, H, W)
+        return out
+
+    def _get_reference_points(self, H, W, device, B):
+        # 生成归一化的 reference points
+        grid_y, grid_x = torch.meshgrid(
+            torch.linspace(0.5, H - 0.5, H, dtype=torch.float32, device=device) / H,
+            torch.linspace(0.5, W - 0.5, W, dtype=torch.float32, device=device) / W,
+            indexing='ij'
+        )
+        ref = torch.stack((grid_x, grid_y), -1)  # [H, W, 2]
+        ref = ref.reshape(1, H * W, 1, 2).repeat(B, 1, 1, 1)  # [B, HW, 1, 2]
+        return ref
