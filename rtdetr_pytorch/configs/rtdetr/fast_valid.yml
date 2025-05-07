@@ -8,7 +8,7 @@ __include__: [
 ]
 
 
-use_wandb: True
+use_wandb: False
 wandb_name: fast_valid
 wandb_id: "10001"
 

@@ -59,7 +59,7 @@ class DetSolver(BaseSolver):
             train_stats = train_one_epoch(
                 self.model, self.criterion, self.train_dataloader, self.optimizer, self.device, epoch,
                 args.clip_max_norm, print_freq=args.log_step, ema=self.ema, scaler=self.scaler, 
-                use_wandb=dist.is_main_process())
+                use_wandb=yaml_cfg['use_wandb'])
 
             self.lr_scheduler.step()
             
