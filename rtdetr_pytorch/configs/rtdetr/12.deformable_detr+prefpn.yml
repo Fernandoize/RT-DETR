@@ -4,8 +4,8 @@ __include__: [
 ]
 
 use_wandb: True
-wandb_name: deformable_detr+one_to_many_group
-wandb_id: "20011"
+wandb_name: deformable_detr_prefpn
+wandb_id: "20012"
 
 HybridEncoder:
   use_fpn: True

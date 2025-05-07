@@ -4,7 +4,7 @@ __include__: [
 ]
 
 use_wandb: True
-wandb_name: deformable_detr_fpn
+wandb_name: deformable_detr+deformable_encoder+multi_scale_cross_attention
 wandb_id: "20005"
 
 HybridEncoder:
