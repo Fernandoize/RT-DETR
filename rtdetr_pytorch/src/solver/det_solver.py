@@ -66,7 +66,7 @@ class DetSolver(BaseSolver):
             module = self.ema.module if self.ema else self.model
             test_stats, coco_evaluator = evaluate(
                 module, self.criterion, self.postprocessor, self.val_dataloader, base_ds, 
-                self.device, self.output_dir, epoch=epoch, use_wandb=dist.is_main_process()
+                self.device, self.output_dir, epoch=epoch, use_wandb=yaml_cfg['use_wandb']
             )
 
             # 更新最佳状态
@@ -144,7 +144,7 @@ class DetSolver(BaseSolver):
         test_stats, coco_evaluator = evaluate(
             module, self.criterion, self.postprocessor,
             self.val_dataloader, base_ds, self.device, self.output_dir,
-            use_wandb=dist.is_main_process()
+            use_wandb=yaml_cfg['use_wandb']
         )
                 
         if self.output_dir:

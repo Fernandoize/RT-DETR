@@ -556,20 +556,34 @@ class HybridEncoder(nn.Module):
         # Cross attention between feature levels
         # Prepare memory for cross attention
         memory_list = []
-        memory_spatial_shapes = []
-        for feat in proj_feats:
-            h, w = feat.shape[2:]
-            memory_list.append(feat.flatten(2).permute(0, 2, 1))
-            memory_spatial_shapes.append((h, w))
-
-        memory = torch.cat(memory_list, dim=1)
-        memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
+        # memory_spatial_shapes = []
+        # for feat in proj_feats:
+        #     h, w = feat.shape[2:]
+        #     memory_list.append(feat.flatten(2).permute(0, 2, 1))
+        #     memory_spatial_shapes.append((h, w))
+        #
+        # memory = torch.cat(memory_list, dim=1)
+        # memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
 
         # Apply cross attention
         for i, enc_ind in enumerate(self.use_encoder_idx):
             h, w = proj_feats[enc_ind].shape[2:]
             spatial_shapes = [(h, w)]
             src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
+
+            # 对 memory_list 里的每个特征做上采样/下采样
+            aligned_feats = []
+            for feat in proj_feats:
+                if feat.shape[2:] != (h, w):
+                    # 使用最近邻或双线性插值
+                    aligned_feat = F.interpolate(feat, size=(h, w), mode='bilinear', align_corners=False)
+                else:
+                    aligned_feat = feat
+                aligned_feats.append(aligned_feat)
+            # flatten 并拼接
+            memory_list = [f.flatten(2).permute(0, 2, 1) for f in aligned_feats]
+            memory = torch.cat(memory_list, dim=1)
+            memory_spatial_shapes = torch.tensor([(h, w)] * len(aligned_feats), device=memory.device)
 
             if self.training or self.eval_spatial_size is None:
                 pos_embed = self.build_2d_sincos_position_embedding(
