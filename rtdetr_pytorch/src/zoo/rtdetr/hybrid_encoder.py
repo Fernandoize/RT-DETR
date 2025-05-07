@@ -331,13 +331,42 @@ class CrossAttentionEncoderLayer(nn.Module):
         return src
 
 class CrossAttentionEncoder(nn.Module):
-    def __init__(self, encoder_layer, num_layers, norm=None, deformable_encoder=False):
+    def __init__(self, encoder_layer, num_layers, norm=None, deformable_encoder=False, use_cross_attention=False):
         super().__init__()
         self.layers = nn.ModuleList([copy.deepcopy(encoder_layer) for _ in range(num_layers)])
         self.num_layers = num_layers
         self.norm = norm
         self.deformable_encoder = deformable_encoder
+        self.use_cross_attention = use_cross_attention
 
+    # @staticmethod
+    # def get_reference_points(spatial_shapes, device, grid_size=0.05, eps=1e-2):
+    #     reference_points_list = []
+    #     for lvl, (H_, W_) in enumerate(spatial_shapes):
+    #         ref_y, ref_x = torch.meshgrid(
+    #             torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
+    #             torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device)
+    #         )
+    #         ref_y = ref_y.reshape(-1)[None]
+    #         ref_x = ref_x.reshape(-1)[None]
+    #         ref_xy = torch.stack((ref_x, ref_y), -1)
+    #
+    #         valid_WH = torch.tensor([W_, H_]).to(torch.float32)
+    #         # 计算grid_xy的中心点，然后与特征图的大小进行归一化
+    #         ref_xy = (ref_xy.unsqueeze(0) + 0.5) / valid_WH
+    #         # x,y代表参考点中心坐标，wh代表宽和高
+    #         wh = torch.ones_like(ref_xy) * grid_size * (2.0 ** lvl)
+    #         reference_points_list.append(torch.concat([ref_xy, wh], -1).reshape(-1, H_ * W_, 4))
+    #
+    #     reference_points = torch.concat(reference_points_list, 1).to(device)
+    #     # 边界值, 筛选出不合法的边界锚框
+    #     valid_mask = ((reference_points > eps) * (reference_points < 1 - eps)).all(-1, keepdim=True)
+    #     # 将锚点从[0,1]转换到对数空间，便于后续回归任务的学习，在损失计算中，inf和nan值会被过滤掉
+    #     reference_points = torch.log(reference_points / (1 - reference_points))
+    #     reference_points = torch.where(valid_mask, reference_points, torch.inf)
+    #
+    #     reference_points = reference_points[:, :, None]
+    #     return reference_points
     @staticmethod
     def get_reference_points(spatial_shapes, device):
         reference_points_list = []
@@ -357,8 +386,8 @@ class CrossAttentionEncoder(nn.Module):
     def forward(self, src, src_mask=None, pos_embed=None, spatial_shapes=None, memory=None, memory_spatial_shapes=None):
         output = src
         reference_points = None
-        
-        if self.num_layers > 0 and self.deformable_encoder:
+
+        if self.num_layers > 0 and (self.deformable_encoder or self.use_cross_attention):
             reference_points = self.get_reference_points(spatial_shapes, device=src.device)
 
         for layer in self.layers:
@@ -454,14 +483,15 @@ class HybridEncoder(nn.Module):
                 dropout=dropout,
                 activation=enc_act,
                 deformable_encoder=deformable_encoder,
-                num_levels=len(in_channels),
+                num_levels=len(in_channels)-1,
                 num_points=num_cross_attention_points,
                 use_cross_attention=self.use_cross_attention,
             )
             self.encoder.append(CrossAttentionEncoder(
                 encoder_layer,
                 num_encoder_layers,
-                deformable_encoder=deformable_encoder
+                deformable_encoder=deformable_encoder,
+                use_cross_attention=self.use_cross_attention
             ))
 
         if self.use_fpn:
@@ -526,11 +556,11 @@ class HybridEncoder(nn.Module):
         # Cross attention between feature levels
         # Prepare memory for cross attention
         memory_list = []
-        memory_spatial_shapes = []
+        all_memory_spatial_shapes = []
         for feat in proj_feats:
             h, w = feat.shape[2:]
             memory_list.append(feat.flatten(2).permute(0, 2, 1))
-            memory_spatial_shapes.append((h, w))
+            all_memory_spatial_shapes.append((h, w))
 
         # Apply cross attention
         for i, enc_ind in enumerate(self.use_encoder_idx):
@@ -545,7 +575,7 @@ class HybridEncoder(nn.Module):
                 pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src_flatten.device)
 
             memory = torch.cat([item for i, item in enumerate(memory_list) if i != enc_ind],dim=1)
-            memory_spatial_shapes = torch.tensor([item for i, item in enumerate(memory_spatial_shapes) if i != enc_ind], device=memory.device)
+            memory_spatial_shapes = torch.tensor([item for i, item in enumerate(all_memory_spatial_shapes) if i != enc_ind], device=memory.device)
 
             output = self.encoder[i](
                 src_flatten,
