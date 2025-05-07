@@ -4,7 +4,7 @@ Modules to compute the matching cost and solve the corresponding LSAP.
 
 by lyuwenyu
 """
-
+import numpy as np
 import torch
 import torch.nn.functional as F 
 
@@ -28,9 +28,9 @@ class HungarianMatcher(nn.Module):
     while the others are un-matched (and thus treated as non-objects).
     """
 
-    __share__ = ['use_focal_loss', ]
+    __share__ = ['use_focal_loss', 'group_detr']
 
-    def __init__(self, weight_dict, use_focal_loss=False, alpha=0.25, gamma=2.0):
+    def __init__(self, weight_dict, use_focal_loss=False, alpha=0.25, gamma=2.0, group_detr=1):
         """Creates the matcher
 
         Params:
@@ -40,6 +40,7 @@ class HungarianMatcher(nn.Module):
         """
         super().__init__()
         # 分类损失、边界框损失、iou损失
+        self.group_detr = group_detr
         self.cost_class = weight_dict['cost_class']
         self.cost_bbox = weight_dict['cost_bbox']
         self.cost_giou = weight_dict['cost_giou']
@@ -124,8 +125,26 @@ class HungarianMatcher(nn.Module):
         # 8. 获取目标框的数量，将成本矩阵C按照size大小进行分割，每个分割对应一个目标的预测框和真实框的成本矩阵
         # 对每个分割的成本矩阵c[i]使用匈牙利算法(linear_sum_assigment)进行匹配，这个算法会返回一个最优的匹配结果，通常是最小化总成本
         # 每一列代表某个目标与所有query计算出来的成本大小
-        sizes = [len(v["boxes"]) for v in targets]
+        # sizes = [len(v["boxes"]) for v in targets]
         # indice包含每个目标框的匹配结果
-        indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+        # indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
 
+        # 5. 支持将查询分为多个组进行匹配, 每个组求最优解，相当于每个target对应多个最佳的query, 但只是局部最佳
+        sizes = [len(v["boxes"]) for v in targets]
+        indices = []
+        g_num_queries = num_queries // self.group_detr
+        C_list = C.split(g_num_queries, dim=1)
+        for g_i in range(self.group_detr):
+            C_g = C_list[g_i]
+            indices_g = [linear_sum_assignment(c[i]) for i, c in enumerate(C_g.split(sizes, -1))]
+            if g_i == 0:
+                indices = indices_g
+            else:
+                indices = [
+                    # 这里的行坐标需要加上g_i * g_num_queries，因为每个组内的匹配结果需要加上该组内的query的索引
+                    (np.concatenate([indice1[0], indice2[0] + g_num_queries * g_i]), np.concatenate([indice1[1], indice2[1]]))
+                    for indice1, indice2 in zip(indices, indices_g)
+                ]
+        # 每个group取M个query, 10个group则是M * 10
         return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+        # return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
