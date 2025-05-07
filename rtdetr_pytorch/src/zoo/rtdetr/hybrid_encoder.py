@@ -556,11 +556,14 @@ class HybridEncoder(nn.Module):
         # Cross attention between feature levels
         # Prepare memory for cross attention
         memory_list = []
-        all_memory_spatial_shapes = []
+        memory_spatial_shapes = []
         for feat in proj_feats:
             h, w = feat.shape[2:]
             memory_list.append(feat.flatten(2).permute(0, 2, 1))
-            all_memory_spatial_shapes.append((h, w))
+            memory_spatial_shapes.append((h, w))
+
+        memory = torch.cat(memory_list, dim=1)
+        memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
 
         # Apply cross attention
         for i, enc_ind in enumerate(self.use_encoder_idx):
@@ -573,9 +576,6 @@ class HybridEncoder(nn.Module):
                     w, h, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
             else:
                 pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src_flatten.device)
-
-            memory = torch.cat([item for i, item in enumerate(memory_list) if i != enc_ind],dim=1)
-            memory_spatial_shapes = torch.tensor([item for i, item in enumerate(all_memory_spatial_shapes) if i != enc_ind], device=memory.device)
 
             output = self.encoder[i](
                 src_flatten,
