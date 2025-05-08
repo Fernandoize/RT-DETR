@@ -215,7 +215,7 @@ class TransformerEncoder(nn.Module):
                     # / (valid_ratios[:, None, lvl, 0] * W_)
             ref = torch.stack((ref_x, ref_y), -1)
             reference_points_list.append(ref)
-        reference_points = torch.cat(reference_points_list, 2)
+        reference_points = torch.cat(reference_points_list, 1)
         reference_points = reference_points[:, :, None]
                             # * valid_ratios[:, None])
         return reference_points
@@ -443,6 +443,8 @@ class HybridEncoder(nn.Module):
                  use_cross_attention=False,
                  # 交叉注意力Deformable Attention中参考点的个数
                  num_cross_attention_points=4,
+                 # 是否使用全局注意力
+                 use_global_attention=False,
                  # 开启FPN
                  use_fpn=False,
                  ):
@@ -457,6 +459,7 @@ class HybridEncoder(nn.Module):
         self.deformable_encoder = deformable_encoder
         self.use_fpn = use_fpn
         self.use_cross_attention = use_cross_attention
+        self.use_global_attention = use_global_attention
 
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
@@ -474,8 +477,16 @@ class HybridEncoder(nn.Module):
                 )
             )
 
-        self.encoder = nn.ModuleList([])
-        for _ in range(len(use_encoder_idx)):
+        # self.encoder = nn.ModuleList([])
+        # for _ in range(len(use_encoder_idx)):
+        if self.use_global_attention:
+            self.global_attn = MSDeformableAttentionGQA(
+                embed_dim=hidden_dim,
+                num_heads=nhead,
+                num_levels=len(self.use_encoder_idx),
+                num_points=4,  # 或你想要的点数,
+            )
+        else:
             encoder_layer = CrossAttentionEncoderLayer(
                 hidden_dim,
                 nhead=nhead,
@@ -487,12 +498,12 @@ class HybridEncoder(nn.Module):
                 num_points=num_cross_attention_points,
                 use_cross_attention=self.use_cross_attention,
             )
-            self.encoder.append(CrossAttentionEncoder(
+            self.encoder = CrossAttentionEncoder(
                 encoder_layer,
                 num_encoder_layers,
                 deformable_encoder=deformable_encoder,
                 use_cross_attention=self.use_cross_attention
-            ))
+            )
 
         if self.use_fpn:
             # top-down fpn
@@ -520,6 +531,9 @@ class HybridEncoder(nn.Module):
                 )
         self._reset_parameters()
 
+        self.level_embed = nn.Parameter(torch.Tensor(len(in_channels), hidden_dim))
+        nn.init.normal_(self.level_embed)  # 初始化
+
     def _reset_parameters(self):
         if self.eval_spatial_size:
             for idx in self.use_encoder_idx:
@@ -528,7 +542,6 @@ class HybridEncoder(nn.Module):
                     self.eval_spatial_size[1] // stride, self.eval_spatial_size[0] // stride,
                     self.hidden_dim, self.pe_temperature)
                 setattr(self, f'pos_embed{idx}', pos_embed)
-
                 # self.register_buffer(f'pos_embed{idx}', pos_embed)
 
     @staticmethod
@@ -549,7 +562,66 @@ class HybridEncoder(nn.Module):
 
         return torch.concat([out_w.sin(), out_w.cos(), out_h.sin(), out_h.cos()], dim=1)[None, :, :]
 
-    def forward(self, feats):
+    def forward_global_attention(self, feats):
+        assert len(feats) == len(self.in_channels)
+        proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]  # [B, C, H, W] * n
+
+        memory_list = []
+        memory_spatial_shapes = []
+        for lvl, enc_ind in enumerate(self.use_encoder_idx):
+            feat = proj_feats[enc_ind]
+            B, C, H, W = feat.shape
+            # flatten
+            src = feat.flatten(2).permute(0, 2, 1)  # [B, HW, C]
+            # 1. 位置编码
+            if self.training or self.eval_spatial_size is None:
+                pos_embed = self.build_2d_sincos_position_embedding(
+                    W, H, self.hidden_dim, self.pe_temperature).to(src.device)
+            else:
+                pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src.device)
+            # 2. 加上 level embedding
+            lvl_pos = self.level_embed[lvl].view(1, 1, -1)  # [1, 1, C]
+            src = src + pos_embed + lvl_pos
+            memory_list.append(src)
+            memory_spatial_shapes.append((H, W))
+        memory = torch.cat(memory_list, dim=1)  # [B, sum(HW), C]
+        memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)  # [n_levels, 2]
+
+        # 2. 位置编码（可选）
+        # pos_embed = ... # 可选，和 memory 一样 shape
+
+        # 3. 一次 attention（如 deformable attention）
+        # 以 MSDeformableAttentionGQA 为例
+        # 你需要构造 reference_points，通常 shape [B, sum(HW), n_levels, 2]
+        reference_points_list = []
+        for lvl, (H, W) in enumerate(memory_spatial_shapes):
+            grid_y, grid_x = torch.meshgrid(
+                torch.linspace(0.5, H - 0.5, H, dtype=torch.float32, device=memory.device) / H,
+                torch.linspace(0.5, W - 0.5, W, dtype=torch.float32, device=memory.device) / W,
+                indexing='ij'
+            )
+            ref = torch.stack((grid_x, grid_y), -1)  # [H, W, 2]
+            ref = ref.reshape(1, H * W, 1, 2).repeat(B, 1, 1, 1)  # [1, HW, 1, 2]
+            reference_points_list.append(ref)
+        reference_points = torch.cat(reference_points_list, dim=1)  # [B, sum(HW), 1, 2]
+        reference_points = reference_points.expand(-1, -1, len(memory_spatial_shapes), -1)  # [B, sum(HW), n_levels, 2]
+
+        # 4. 调用 attention
+        # 假设 self.global_attn = MSDeformableAttentionGQA(...)
+        memory_out, _ = self.global_attn(
+            memory,  # [B, sum(HW), C]
+            reference_points,  # [B, sum(HW), n_levels, 2]
+            memory,  # value
+            memory_spatial_shapes  # [n_levels, 2]
+        )  # [B, sum(HW), C]
+
+        # 5. 拆分回各尺度
+        split_sizes = [H * W for (H, W) in memory_spatial_shapes]
+        outs = torch.split(memory_out, split_sizes, dim=1)
+        outs = [o.permute(0, 2, 1).reshape(B, C, H, W) for o, (H, W) in zip(outs, memory_spatial_shapes)]
+        return outs
+
+    def forward_cross_attention(self, feats):
         assert len(feats) == len(self.in_channels)
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
 
@@ -566,7 +638,7 @@ class HybridEncoder(nn.Module):
         # memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
 
         # Apply cross attention
-        for i, enc_ind in enumerate(self.use_encoder_idx):
+        for lvl, enc_ind in enumerate(self.use_encoder_idx):
             h, w = proj_feats[enc_ind].shape[2:]
             spatial_shapes = [(h, w)]
             src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
@@ -590,8 +662,10 @@ class HybridEncoder(nn.Module):
                     w, h, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
             else:
                 pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src_flatten.device)
+            lvl_pos = self.level_embed[lvl].view(1, 1, -1)  # [1, 1, C]
+            pos_embed = pos_embed + lvl_pos
 
-            output = self.encoder[i](
+            output = self.encoder(
                 src_flatten,
                 pos_embed=pos_embed,
                 spatial_shapes=spatial_shapes,
@@ -600,6 +674,13 @@ class HybridEncoder(nn.Module):
             )
             proj_feats[enc_ind] = output.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()
 
+        return proj_feats
+
+    def forward(self, feats):
+        if self.use_global_attention:
+            proj_feats = self.forward_global_attention(feats)
+        else:
+            proj_feats = self.forward_cross_attention(feats)
 
         if self.use_fpn:
         # broadcasting and fusion
