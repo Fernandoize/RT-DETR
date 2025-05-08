@@ -5,8 +5,8 @@ __include__: [
 
 use_wandb: True
 # post fpn
-wandb_name: deformable_detr_fpn_attention
-wandb_id: "200013"
+wandb_name: deformable_detr+deformable_encoder+group_detr
+wandb_id: "200014"
 
 SetCriterion:
   group_detr: 10
