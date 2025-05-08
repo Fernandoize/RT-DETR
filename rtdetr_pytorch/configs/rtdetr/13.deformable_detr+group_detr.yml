@@ -1,0 +1,18 @@
+
+__include__: [
+  './2.deformable_detr+deformable_encoder.yml',
+]
+
+use_wandb: True
+# post fpn
+wandb_name: deformable_detr_fpn_attention
+wandb_id: "200013"
+
+SetCriterion:
+  group_detr: 10
+
+  matcher:
+    group_detr: 10
+
+RTDETRTransformer:
+  num_queries: 300
