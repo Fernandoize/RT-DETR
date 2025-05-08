@@ -85,7 +85,7 @@ HybridEncoder:
   use_cross_attention: False
   use_global_attention: False
   use_fpn: False
-  use_encoder_idx: [0, 1, 2]
+  use_encoder_idx: [1, 2]
 
 RTDETRTransformer:
   eval_idx: -1

@@ -9,3 +9,4 @@ wandb_id: "20004"
 
 HybridEncoder:
   use_cross_attention: True
+  num_cross_attention_points: 64
