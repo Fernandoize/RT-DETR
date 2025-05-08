@@ -653,12 +653,10 @@ class HybridEncoder(nn.Module):
         return proj_feats
 
     def forward(self, feats):
-        assert len(feats) == len(self.in_channels)
-        proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
-        # if self.use_global_attention:
-        #     proj_feats = self.forward_global_attention(feats)
-        # else:
-        #     proj_feats = self.forward_cross_attention(feats)
+        if self.use_global_attention:
+            proj_feats = self.forward_global_attention(feats)
+        else:
+            proj_feats = self.forward_cross_attention(feats)
 
         if self.use_fpn:
         # broadcasting and fusion
