@@ -257,7 +257,7 @@ class CrossAttentionEncoderLayer(nn.Module):
 
         # Self attention
         if self.deformable_encoder:
-            self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=num_levels, num_points=num_points)
+            self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=1, num_points=num_points)
         else:
             self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
 
@@ -477,23 +477,23 @@ class HybridEncoder(nn.Module):
                 )
             )
 
-        encoder_layer = CrossAttentionEncoderLayer(
-            hidden_dim,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=enc_act,
-            deformable_encoder=deformable_encoder,
-            num_levels=len(self.use_encoder_idx),
-            num_points=num_cross_attention_points,
-            use_cross_attention=self.use_cross_attention,
-        )
-        self.encoder = CrossAttentionEncoder(
-            encoder_layer,
-            num_encoder_layers,
-            deformable_encoder=deformable_encoder,
-            use_cross_attention=self.use_cross_attention
-        )
+        # encoder_layer = CrossAttentionEncoderLayer(
+        #     hidden_dim,
+        #     nhead=nhead,
+        #     dim_feedforward=dim_feedforward,
+        #     dropout=dropout,
+        #     activation=enc_act,
+        #     deformable_encoder=deformable_encoder,
+        #     num_levels=len(self.in_channels),
+        #     num_points=num_cross_attention_points,
+        #     use_cross_attention=self.use_cross_attention,
+        # )
+        # self.encoder = CrossAttentionEncoder(
+        #     encoder_layer,
+        #     num_encoder_layers,
+        #     deformable_encoder=deformable_encoder,
+        #     use_cross_attention=self.use_cross_attention
+        # )
             # self.encoder = nn.ModuleList([])
             # for _ in range(len(use_encoder_idx)):
             #     encoder_layer = CrossAttentionEncoderLayer(
@@ -524,7 +524,7 @@ class HybridEncoder(nn.Module):
                 self.lateral_convs.append(ConvNormLayer(hidden_dim, hidden_dim, 1, 1, act=act))
                 # 从上到下降维
                 self.fpn_blocks.append(
-                    FPNDeformableAttentionBlock(hidden_dim, num_heads=8, num_levels=1, num_points=4)
+                    CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
                 )
 
             # bottom-up pan
@@ -536,7 +536,7 @@ class HybridEncoder(nn.Module):
                     ConvNormLayer(hidden_dim, hidden_dim, 3, 2, act=act)
                 )
                 self.pan_blocks.append(
-                    FPNDeformableAttentionBlock(hidden_dim, num_heads=8, num_levels=1, num_points=4)
+                    CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
                 )
         self._reset_parameters()
 
@@ -571,10 +571,7 @@ class HybridEncoder(nn.Module):
 
         return torch.concat([out_w.sin(), out_w.cos(), out_h.sin(), out_h.cos()], dim=1)[None, :, :]
 
-    def forward_global_attention(self, feats):
-        assert len(feats) == len(self.in_channels)
-        proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]  # [B, C, H, W] * n
-
+    def forward_global_attention(self, proj_feats):
         memory_list = []
         memory_spatial_shapes = []
         pos_embeds = []
@@ -613,10 +610,7 @@ class HybridEncoder(nn.Module):
         outs = [o.permute(0, 2, 1).reshape(B, C, H, W) for o, (H, W) in zip(outs, memory_spatial_shapes)]
         return outs
 
-    def forward_cross_attention(self, feats):
-        assert len(feats) == len(self.in_channels)
-        proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
-
+    def forward_cross_attention(self, proj_feats):
         # Cross attention between feature levels
         # Prepare memory for cross attention
         memory_list = []
@@ -669,10 +663,12 @@ class HybridEncoder(nn.Module):
         return proj_feats
 
     def forward(self, feats):
-        if self.use_global_attention:
-            proj_feats = self.forward_global_attention(feats)
-        else:
-            proj_feats = self.forward_cross_attention(feats)
+        assert len(feats) == len(self.in_channels)
+        proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
+        # if self.use_global_attention:
+        #     proj_feats = self.forward_global_attention(proj_feats)
+        # else:
+        #     proj_feats = self.forward_cross_attention(proj_feats)
 
         if self.use_fpn:
         # broadcasting and fusion
@@ -683,7 +679,7 @@ class HybridEncoder(nn.Module):
                 feat_high = self.lateral_convs[len(self.in_channels) - 1 - idx](feat_high)
                 inner_outs[0] = feat_high
                 upsample_feat = F.interpolate(feat_high, scale_factor=2., mode='nearest')
-                inner_out = self.fpn_blocks[len(self.in_channels)-1-idx](feat_low, upsample_feat)
+                inner_out = self.fpn_blocks[len(self.in_channels)-1-idx](torch.concat([upsample_feat, feat_low], dim=1))
                 inner_outs.insert(0, inner_out)
 
             outs = [inner_outs[0]]
@@ -691,7 +687,7 @@ class HybridEncoder(nn.Module):
                 feat_low = outs[-1]
                 feat_high = inner_outs[idx + 1]
                 downsample_feat = self.downsample_convs[idx](feat_low)
-                out = self.pan_blocks[idx](feat_high, downsample_feat)
+                out = self.pan_blocks[idx](torch.concat([downsample_feat, feat_high], dim=1))
                 outs.append(out)
             return outs
         return proj_feats

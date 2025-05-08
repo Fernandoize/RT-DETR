@@ -1,0 +1,11 @@
+
+__include__: [
+  './1.deformable_detr_baseline.yml',
+]
+
+use_wandb: True
+wandb_name: only_cnn_encoder
+wandb_id: "20018"
+
+HybridEncoder:
+  use_fpn: True
