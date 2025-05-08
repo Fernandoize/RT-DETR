@@ -536,7 +536,7 @@ class RTDETRTransformer(nn.Module):
         self.num_levels = num_levels
         self.num_classes = num_classes
         self.num_queries = num_queries
-        self.num_learn_query = int(self.num_queries/3)
+        self.num_learn_query = 0
         self.num_topk_query = int(self.num_queries - self.num_learn_query)
         # self.query_count = 0
         self.eps = eps
