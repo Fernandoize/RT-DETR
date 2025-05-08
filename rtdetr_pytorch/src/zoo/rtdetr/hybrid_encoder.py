@@ -653,10 +653,12 @@ class HybridEncoder(nn.Module):
         return proj_feats
 
     def forward(self, feats):
-        if self.use_global_attention:
-            proj_feats = self.forward_global_attention(feats)
-        else:
-            proj_feats = self.forward_cross_attention(feats)
+        assert len(feats) == len(self.in_channels)
+        proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
+        # if self.use_global_attention:
+        #     proj_feats = self.forward_global_attention(feats)
+        # else:
+        #     proj_feats = self.forward_cross_attention(feats)
 
         if self.use_fpn:
         # broadcasting and fusion
@@ -667,7 +669,7 @@ class HybridEncoder(nn.Module):
                 feat_high = self.lateral_convs[len(self.in_channels) - 1 - idx](feat_high)
                 inner_outs[0] = feat_high
                 upsample_feat = F.interpolate(feat_high, scale_factor=2., mode='nearest')
-                inner_out = self.fpn_blocks[len(self.in_channels)-1-idx](torch.concat([upsample_feat, feat_low], dim=1))
+                inner_out = self.fpn_blocks[len(self.in_channels)-1-idx](feat_low, upsample_feat)
                 inner_outs.insert(0, inner_out)
 
             outs = [inner_outs[0]]
@@ -675,7 +677,7 @@ class HybridEncoder(nn.Module):
                 feat_low = outs[-1]
                 feat_high = inner_outs[idx + 1]
                 downsample_feat = self.downsample_convs[idx](feat_low)
-                out = self.pan_blocks[idx](torch.concat([downsample_feat, feat_high], dim=1))
+                out = self.pan_blocks[idx](feat_high, downsample_feat)
                 outs.append(out)
             return outs
         return proj_feats
@@ -783,26 +785,29 @@ class FPNDeformableAttentionBlock(nn.Module):
             embed_dim=embed_dim,
             num_heads=num_heads,
             num_levels=num_levels,
-            num_points=num_points
+            num_points=num_points,
+            num_kv_heads=num_heads,
         )
         self.norm = nn.LayerNorm(embed_dim)
 
-    def forward(self, x):
+    def forward(self, q, v):
         # x: [B, C, H, W]
-        B, C, H, W = x.shape
-        x_flat = x.flatten(2).permute(0, 2, 1)  # [B, HW, C]
+        B, C, H, W = q.shape
+        q = q.flatten(2).permute(0, 2, 1)  # [B, HW, C]
+        v = v.flatten(2).permute(0, 2, 1)  # [B, HW, C]
         # 构造 reference_points 和 value_spatial_shapes
-        reference_points = self._get_reference_points(H, W, x.device, B)
-        value_spatial_shapes = torch.tensor([[H, W]], device=x.device)
+        reference_points = self._get_reference_points(H, W, q.device, B)
+        value_spatial_shapes = torch.tensor([[H, W]], device=v.device)
         out, _ = self.attn(
-            x_flat,  # query
+            q,  # query
             reference_points,  # [B, HW, num_levels, 2]
-            x_flat,  # value
+            v,  # value
             value_spatial_shapes  # [num_levels, 2]
         )
-        out = self.norm(out)
-        out = out.permute(0, 2, 1).reshape(B, C, H, W)
-        return out
+        q = q + out
+        q = self.norm(q)
+        q = q.permute(0, 2, 1).reshape(B, C, H, W)
+        return q
 
     def _get_reference_points(self, H, W, device, B):
         # 生成归一化的 reference points
