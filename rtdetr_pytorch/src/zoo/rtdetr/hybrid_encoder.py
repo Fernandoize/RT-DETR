@@ -257,7 +257,7 @@ class CrossAttentionEncoderLayer(nn.Module):
 
         # Self attention
         if self.deformable_encoder:
-            self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=1, num_points=num_points)
+            self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=num_levels, num_points=num_points)
         else:
             self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
 
@@ -479,31 +479,23 @@ class HybridEncoder(nn.Module):
 
         # self.encoder = nn.ModuleList([])
         # for _ in range(len(use_encoder_idx)):
-        if self.use_global_attention:
-            self.global_attn = MSDeformableAttentionGQA(
-                embed_dim=hidden_dim,
-                num_heads=nhead,
-                num_levels=len(self.use_encoder_idx),
-                num_points=4,  # 或你想要的点数,
-            )
-        else:
-            encoder_layer = CrossAttentionEncoderLayer(
-                hidden_dim,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                activation=enc_act,
-                deformable_encoder=deformable_encoder,
-                num_levels=len(in_channels),
-                num_points=num_cross_attention_points,
-                use_cross_attention=self.use_cross_attention,
-            )
-            self.encoder = CrossAttentionEncoder(
-                encoder_layer,
-                num_encoder_layers,
-                deformable_encoder=deformable_encoder,
-                use_cross_attention=self.use_cross_attention
-            )
+        encoder_layer = CrossAttentionEncoderLayer(
+            hidden_dim,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=enc_act,
+            deformable_encoder=deformable_encoder,
+            num_levels=len(self.use_encoder_idx),
+            num_points=num_cross_attention_points,
+            use_cross_attention=self.use_cross_attention,
+        )
+        self.encoder = CrossAttentionEncoder(
+            encoder_layer,
+            num_encoder_layers,
+            deformable_encoder=deformable_encoder,
+            use_cross_attention=self.use_cross_attention
+        )
 
         if self.use_fpn:
             # top-down fpn
@@ -568,6 +560,7 @@ class HybridEncoder(nn.Module):
 
         memory_list = []
         memory_spatial_shapes = []
+        pos_embeds = []
         for lvl, enc_ind in enumerate(self.use_encoder_idx):
             feat = proj_feats[enc_ind]
             B, C, H, W = feat.shape
@@ -581,39 +574,22 @@ class HybridEncoder(nn.Module):
                 pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src.device)
             # 2. 加上 level embedding
             lvl_pos = self.level_embed[lvl].view(1, 1, -1)  # [1, 1, C]
-            src = src + pos_embed + lvl_pos
+            pos_embeds.append(pos_embed + lvl_pos)
             memory_list.append(src)
             memory_spatial_shapes.append((H, W))
+        pos_embed = torch.cat(pos_embeds, dim=1)
         memory = torch.cat(memory_list, dim=1)  # [B, sum(HW), C]
+        spatial_shapes = torch.sum(torch.stack([torch.tensor(_) for _ in memory_spatial_shapes]), dim=0)
         memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)  # [n_levels, 2]
 
-        # 2. 位置编码（可选）
-        # pos_embed = ... # 可选，和 memory 一样 shape
-
-        # 3. 一次 attention（如 deformable attention）
-        # 以 MSDeformableAttentionGQA 为例
-        # 你需要构造 reference_points，通常 shape [B, sum(HW), n_levels, 2]
-        reference_points_list = []
-        for lvl, (H, W) in enumerate(memory_spatial_shapes):
-            grid_y, grid_x = torch.meshgrid(
-                torch.linspace(0.5, H - 0.5, H, dtype=torch.float32, device=memory.device) / H,
-                torch.linspace(0.5, W - 0.5, W, dtype=torch.float32, device=memory.device) / W,
-                indexing='ij'
-            )
-            ref = torch.stack((grid_x, grid_y), -1)  # [H, W, 2]
-            ref = ref.reshape(1, H * W, 1, 2).repeat(B, 1, 1, 1)  # [1, HW, 1, 2]
-            reference_points_list.append(ref)
-        reference_points = torch.cat(reference_points_list, dim=1)  # [B, sum(HW), 1, 2]
-        reference_points = reference_points.expand(-1, -1, len(memory_spatial_shapes), -1)  # [B, sum(HW), n_levels, 2]
 
         # 4. 调用 attention
         # 假设 self.global_attn = MSDeformableAttentionGQA(...)
-        memory_out, _ = self.global_attn(
-            memory,  # [B, sum(HW), C]
-            reference_points,  # [B, sum(HW), n_levels, 2]
-            memory,  # value
-            memory_spatial_shapes  # [n_levels, 2]
-        )  # [B, sum(HW), C]
+        memory_out = self.encoder(memory,
+                                  pos_embed=pos_embed,
+                                  spatial_shapes=memory_spatial_shapes,
+                                  memory=memory,
+                                  memory_spatial_shapes=memory_spatial_shapes)
 
         # 5. 拆分回各尺度
         split_sizes = [H * W for (H, W) in memory_spatial_shapes]
