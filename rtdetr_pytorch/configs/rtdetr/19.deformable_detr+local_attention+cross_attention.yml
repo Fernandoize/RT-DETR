@@ -1,0 +1,12 @@
+
+__include__: [
+  './1.deformable_detr_baseline.yml',
+]
+
+use_wandb: True
+wandb_name: deformable_detr+local_attention+cross_attention
+wandb_id: "20028"
+
+HybridEncoder:
+  deformable_encoder: False
+  use_cross_attention: True

@@ -258,14 +258,14 @@ class CrossAttentionEncoderLayer(nn.Module):
 
         # Self attention
         if self.deformable_encoder:
-            self.self_attn = DAttentionBaselineV1(embed_dim=d_model, num_heads=nhead, num_groups=nhead/2)
+            self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=num_levels, num_points=num_points)
         else:
-            self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
+            # self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
+            self.self_attn = LocalAttention(d_model, nhead)
 
         # Cross attention between different feature levels
         if self.use_cross_attention:
-            self.cross_attn = DAttentionBaselineV1(embed_dim=d_model, num_heads=nhead, num_groups=nhead/2)
-
+            self.cross_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=num_levels, num_points=num_points)
 
         # Feed forward network
         self.linear1 = nn.Linear(d_model, dim_feedforward)
@@ -293,11 +293,12 @@ class CrossAttentionEncoderLayer(nn.Module):
         if self.normalize_before:
             src = self.norm1(src)
 
-        q = k = src
+        q = k = self.with_pos_embed(src, pos_embed)
         if self.deformable_encoder:
-            src2, _, _ = self.self_attn(q, spatial_shapes, value=src)
+            src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
         else:
-            src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
+            src2 = self.self_attn(q, pos_embed=None, spatial_shapes=spatial_shapes)
+            # src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
         src = residual + self.dropout1(src2)
         if not self.normalize_before:
             src = self.norm1(src)
@@ -309,13 +310,13 @@ class CrossAttentionEncoderLayer(nn.Module):
                 if self.normalize_before:
                     src = self.norm2(src)
 
-                src2, _, _ = self.cross_attn(
+                src2, _= self.cross_attn(
                     src,
-                    spatial_shapes,
-                    # reference_points,
+                    # spatial_shapes,
+                    reference_points,
                     memory,
-                    # memory_spatial_shapes,
-                    # src_mask
+                    memory_spatial_shapes,
+                    src_mask
                 )
                 src = residual + self.dropout2(src2)
                 if not self.normalize_before:
@@ -478,43 +479,25 @@ class HybridEncoder(nn.Module):
                     nn.BatchNorm2d(hidden_dim)
                 )
             )
-
-        encoder_layer = CrossAttentionEncoderLayer(
-            hidden_dim,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=enc_act,
-            deformable_encoder=deformable_encoder,
-            num_levels=len(self.in_channels),
-            num_points=num_cross_attention_points,
-            use_cross_attention=self.use_cross_attention,
-        )
-        self.encoder = CrossAttentionEncoder(
-            encoder_layer,
-            num_encoder_layers,
-            deformable_encoder=deformable_encoder,
-            use_cross_attention=self.use_cross_attention
-        )
-            # self.encoder = nn.ModuleList([])
-            # for _ in range(len(use_encoder_idx)):
-            #     encoder_layer = CrossAttentionEncoderLayer(
-            #         hidden_dim,
-            #         nhead=nhead,
-            #         dim_feedforward=dim_feedforward,
-            #         dropout=dropout,
-            #         activation=enc_act,
-            #         deformable_encoder=deformable_encoder,
-            #         num_levels=len(self.use_encoder_idx),
-            #         num_points=num_cross_attention_points,
-            #         use_cross_attention=self.use_cross_attention,
-            #     )
-            #     self.encoder.append(CrossAttentionEncoder(
-            #         encoder_layer,
-            #         num_encoder_layers,
-            #         deformable_encoder=deformable_encoder,
-            #         use_cross_attention=self.use_cross_attention
-            #     ))
+            self.encoder = nn.ModuleList([])
+            for _ in range(len(use_encoder_idx)):
+                encoder_layer = CrossAttentionEncoderLayer(
+                    hidden_dim,
+                    nhead=nhead,
+                    dim_feedforward=dim_feedforward,
+                    dropout=dropout,
+                    activation=enc_act,
+                    deformable_encoder=deformable_encoder,
+                    num_levels=len(self.in_channels),
+                    num_points=num_cross_attention_points,
+                    use_cross_attention=self.use_cross_attention,
+                )
+                self.encoder.append(CrossAttentionEncoder(
+                    encoder_layer,
+                    num_encoder_layers,
+                    deformable_encoder=deformable_encoder,
+                    use_cross_attention=self.use_cross_attention
+                ))
 
         if self.use_fpn:
             # top-down fpn
@@ -653,7 +636,7 @@ class HybridEncoder(nn.Module):
             lvl_pos = self.level_embed[lvl].view(1, 1, -1)  # [1, 1, C]
             pos_embed = pos_embed + lvl_pos
 
-            output = self.encoder(
+            output = self.encoder[lvl](
                 src_flatten,
                 pos_embed=pos_embed,
                 spatial_shapes=spatial_shapes,
