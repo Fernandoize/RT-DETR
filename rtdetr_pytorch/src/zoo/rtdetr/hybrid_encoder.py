@@ -293,15 +293,15 @@ class CrossAttentionEncoderLayer(nn.Module):
         if self.normalize_before:
             src = self.norm1(src)
 
-        q = k = self.with_pos_embed(src, pos_embed)
-        if self.deformable_encoder:
-            src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
-        else:
-            src2 = self.self_attn(q, pos_embed=None, spatial_shapes=spatial_shapes)
-            # src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
-        src = residual + self.dropout1(src2)
-        if not self.normalize_before:
-            src = self.norm1(src)
+        # q = k = self.with_pos_embed(src, pos_embed)
+        # if self.deformable_encoder:
+        #     src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
+        # else:
+        #     src2 = self.self_attn(q, pos_embed=None, spatial_shapes=spatial_shapes)
+        #     # src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
+        # src = residual + self.dropout1(src2)
+        # if not self.normalize_before:
+        #     src = self.norm1(src)
 
         # Cross attention with other feature levels
         if self.use_cross_attention:
@@ -311,8 +311,7 @@ class CrossAttentionEncoderLayer(nn.Module):
                     src = self.norm2(src)
 
                 src2, _= self.cross_attn(
-                    src,
-                    # spatial_shapes,
+                    self.with_pos_embed(src, pos_embed),
                     reference_points,
                     memory,
                     memory_spatial_shapes,
