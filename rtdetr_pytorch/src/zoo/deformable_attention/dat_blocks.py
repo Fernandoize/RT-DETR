@@ -1,10 +1,660 @@
-import math
+
+# --------------------------------------------------------
+# Swin Transformer
+# Copyright (c) 2021 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+# Written by Ze Liu
+# --------------------------------------------------------
+# Vision Transformer with Deformable Attention
+# Modified by Zhuofan Xia
+# --------------------------------------------------------
+
+import einops
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-import einops
 from timm.models.layers import to_2tuple, trunc_normal_
+from torch import nn
+from torch.nn.init import trunc_normal_
+
+
+class LocalAttention(nn.Module):
+
+    def __init__(self, dim, heads, window_size, attn_drop, proj_drop):
+        super().__init__()
+
+        window_size = to_2tuple(window_size)  # 将输入的 window_size 转换为二元组 (Wh, Ww)，即使输入是单个整数。
+
+        self.proj_qkv = nn.Linear(dim, 3 * dim)  # 对输入特征进行线性变换，生成 query (q), key (k), value (v) 三个部分。输出维度是输入维度的 3 倍。
+        self.heads = heads  # 注意力头的数量。
+        assert dim % heads == 0  # 确保特征维度可以被注意力头的数量整除。
+        head_dim = dim // heads  # 每个注意力头的特征维度。
+        self.scale = head_dim ** -0.5  # 缩放因子，用于在计算注意力分数时稳定梯度。
+        self.proj_out = nn.Linear(dim, dim)  # 对注意力输出进行线性变换，恢复原始特征维度。
+        self.window_size = window_size  # 局部窗口的大小 (Wh, Ww)。
+        self.proj_drop = nn.Dropout(proj_drop, inplace=True)  # 输出投影后的 dropout 层。
+        self.attn_drop = nn.Dropout(attn_drop, inplace=True)  # 注意力权重后的 dropout 层。
+
+        Wh, Ww = self.window_size
+        self.relative_position_bias_table = nn.Parameter(
+            torch.zeros((2 * Wh - 1) * (2 * Ww - 1), heads)
+        )  # 创建一个可学习的相对位置偏置表。表的大小是 (2*Wh - 1) * (2*Ww - 1) x heads。这个尺寸覆盖了窗口内所有可能的相对位置。
+        trunc_normal_(self.relative_position_bias_table, std=0.01)  # 使用截断正态分布初始化相对位置偏置表。
+
+        coords_h = torch.arange(self.window_size[0])  # 生成高度方向的坐标 [0, 1, ..., Wh-1]。
+        coords_w = torch.arange(self.window_size[1])  # 生成宽度方向的坐标 [0, 1, ..., Ww-1]。
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing='ij'))  # 2, Wh, Ww。生成窗口内所有像素的坐标网格。
+        coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww。将坐标网格展平成 (2, Wh*Ww) 的形状，每列代表一个像素的 (h, w) 坐标。
+        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww。计算窗口内任意两个像素之间的相对坐标。
+        relative_coords = relative_coords.permute(1, 2,
+                                                  0).contiguous()  # Wh*Ww, Wh*Ww, 2。将相对坐标的维度调整为 (Wh*Ww, Wh*Ww, 2)。
+        relative_coords[:, :, 0] += self.window_size[0] - 1  # shift to start from 0。将高度方向的相对坐标平移到 [0, 2*Wh - 2] 的范围。
+        relative_coords[:, :, 1] += self.window_size[1] - 1  # shift to start from 0。将宽度方向的相对坐标平移到 [0, 2*Ww - 2] 的范围。
+        relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1  # 将高度方向的相对坐标乘以一个偏移量，以便与宽度方向的相对坐标组合成唯一的索引。
+        relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww。将两个方向的相对坐标相加，得到一个唯一的相对位置索引。
+        self.register_buffer("relative_position_index",
+                             relative_position_index)  # 将计算得到的相对位置索引注册为 buffer，它不是模型的参数，但会保存在模型的状态中。
+
+    def forward(self, x, mask=None):
+        B, C, H, W = x.size()  # 获取输入特征图的批大小、通道数、高度和宽度。
+        r1, r2 = H // self.window_size[0], W // self.window_size[1]  # 计算高度和宽度方向上窗口的数量。
+
+        x_total = einops.rearrange(x, 'b c (r1 h1) (r2 w1) -> b (r1 r2) (h1 w1) c', h1=self.window_size[0],
+                                   w1=self.window_size[
+                                       1])  # 将输入特征图分割成不重叠的局部窗口，并重新排列形状为 (B, Nr*Nw, Wh*Ww, C)，其中 Nr 和 Nw 是高度和宽度方向的窗口数量。
+        # b: batch size
+        # c: channel dimension
+        # r1, r2: number of windows in height and width
+        # h1, w1: window height and width
+        # m = r1 * r2: total number of windows
+        # n = h1 * w1: number of tokens in each window
+
+        x_total = einops.rearrange(x_total, 'b m n c -> (b m) n c')  # 将批大小和窗口数量合并，形状变为 ((B*Nr*Nw), Wh*Ww, C)。
+
+        qkv = self.proj_qkv(x_total)  # 对每个窗口内的特征进行线性变换，得到 query, key, value。形状为 ((B*Nr*Nw), Wh*Ww, 3*C)。
+        q, k, v = torch.chunk(qkv, 3, dim=2)  # 将 qkv 分割成 query, key, value，每个形状为 ((B*Nr*Nw), Wh*Ww, C)。
+
+        q = q * self.scale  # 对 query 进行缩放。
+        q, k, v = [einops.rearrange(t, 'b n (h c1) -> b h n c1', h=self.heads) for t in
+                   [q, k, v]]  # 将特征按注意力头进行分割，形状变为 ((B*Nr*Nw), heads, Wh*Ww, head_dim)。
+        attn = torch.einsum('b h m c, b h n c -> b h m n', q, k)  # 计算注意力权重。形状为 ((B*Nr*Nw), heads, Wh*Ww, Wh*Ww)。
+
+        relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
+            self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1],
+            -1)  # Wh*Ww,Wh*Ww,nH。根据相对位置索引从可学习的偏置表中获取对应的偏置值。
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww。调整偏置的形状。
+        attn_bias = relative_position_bias
+        attn = attn + attn_bias.unsqueeze(0)  # 将相对位置偏置添加到注意力权重中。
+
+        if mask is not None:
+            # attn : (b * nW) h w w
+            # mask : nW ww ww
+            nW, ww, _ = mask.size()  # 获取 mask 的形状。mask 通常用于处理可变长度的序列或在窗口注意力中引入额外的约束。
+            attn = einops.rearrange(attn, '(b n) h w1 w2 -> b n h w1 w2', n=nW, h=self.heads, w1=ww,
+                                    w2=ww) + mask.reshape(1, nW, 1, ww, ww)  # 如果提供了 mask，则将其添加到注意力权重中。
+            attn = einops.rearrange(attn, 'b n h w1 w2 -> (b n) h w1 w2')  # 恢复注意力权重的形状。
+        attn = self.attn_drop(attn.softmax(dim=3))  # 对注意力权重进行 softmax 归一化，并应用 dropout。
+
+        x = torch.einsum('b h m n, b h n c -> b h m c', attn,
+                         v)  # 使用注意力权重对 value 进行加权求和。形状为 ((B*Nr*Nw), heads, Wh*Ww, head_dim)。
+        x = einops.rearrange(x, 'b h n c1 -> b n (h c1)')  # 将注意力头的维度合并回特征维度，形状变为 ((B*Nr*Nw), Wh*Ww, C)。
+        x = self.proj_drop(self.proj_out(x))  # 对输出进行线性投影和 dropout。形状为 ((B*Nr*Nw), Wh*Ww, C)。
+        x = einops.rearrange(x, '(b r1 r2) (h1 w1) c -> b c (r1 h1) (r2 w1)', r1=r1, r2=r2, h1=self.window_size[0],
+                             w1=self.window_size[1])  # 将窗口重新组合成原始的特征图形状 (B, C, H, W)。
+
+        return x, None, None  # 返回局部注意力处理后的特征图 x，以及两个 None 值 (通常在自注意力机制中用于返回注意力权重等信息，但在局部注意力中可能不直接返回)。
+
+
+class ShiftWindowAttention(LocalAttention):
+
+    def __init__(self, dim, heads, window_size, attn_drop, proj_drop, shift_size, fmap_size):
+
+        super().__init__(dim, heads, window_size, attn_drop, proj_drop)
+
+        self.fmap_size = to_2tuple(fmap_size)
+        self.shift_size = shift_size
+
+        assert 0 < self.shift_size < min(self.window_size), "wrong shift size."
+
+        img_mask = torch.zeros(*self.fmap_size)  # H W
+        h_slices = (slice(0, -self.window_size[0]),
+                    slice(-self.window_size[0], -self.shift_size),
+                    slice(-self.shift_size, None))
+        w_slices = (slice(0, -self.window_size[1]),
+                    slice(-self.window_size[1], -self.shift_size),
+                    slice(-self.shift_size, None))
+        cnt = 0
+        for h in h_slices:
+            for w in w_slices:
+                img_mask[h, w] = cnt
+                cnt += 1
+        mask_windows = einops.rearrange(img_mask, '(r1 h1) (r2 w1) -> (r1 r2) (h1 w1)', h1=self.window_size[0],
+                                        w1=self.window_size[1])
+        attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)  # nW ww ww
+        attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+        self.register_buffer("attn_mask", attn_mask)
+
+    def forward(self, x):
+
+        shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(2, 3))
+        sw_x, _, _ = super().forward(shifted_x, self.attn_mask)
+        x = torch.roll(sw_x, shifts=(self.shift_size, self.shift_size), dims=(2, 3))
+
+        return x, None, None
+
+class DAttentionBaseline(nn.Module):
+
+    def __init__(
+            self, q_size, kv_size, n_heads, n_head_channels, n_groups,
+            attn_drop, proj_drop, stride,
+            offset_range_factor, use_pe, dwc_pe,
+            no_off, fixed_pe, ksize, log_cpb
+    ):
+
+        super().__init__()
+        self.dwc_pe = dwc_pe
+        self.n_head_channels = n_head_channels
+        self.scale = self.n_head_channels ** -0.5
+        self.n_heads = n_heads
+        self.q_h, self.q_w = q_size
+        # self.kv_h, self.kv_w = kv_size
+        self.kv_h, self.kv_w = self.q_h // stride, self.q_w // stride
+        self.nc = n_head_channels * n_heads
+        self.n_groups = n_groups
+        # 将channel分为 n_groups, 每个group多个head,尽可能增加groups中形变的多样性
+        self.n_group_channels = self.nc // self.n_groups
+        self.n_group_heads = self.n_heads // self.n_groups
+        self.use_pe = use_pe
+        self.fixed_pe = fixed_pe
+        self.no_off = no_off
+        self.offset_range_factor = offset_range_factor
+        self.ksize = ksize
+        self.log_cpb = log_cpb
+        self.stride = stride
+        kk = self.ksize
+        pad_size = kk // 2 if kk != stride else 0
+
+        self.conv_offset = nn.Sequential(
+            nn.Conv2d(self.n_group_channels, self.n_group_channels, kk, stride, pad_size, groups=self.n_group_channels),
+            LayerNormProxy(self.n_group_channels),
+            nn.GELU(),
+            nn.Conv2d(self.n_group_channels, 2, 1, 1, 0, bias=False)
+        )
+        if self.no_off:
+            for m in self.conv_offset.parameters():
+                m.requires_grad_(False)
+
+        self.proj_q = nn.Conv2d(
+            self.nc, self.nc,
+            kernel_size=1, stride=1, padding=0
+        )
+
+        self.proj_k = nn.Conv2d(
+            self.nc, self.nc,
+            kernel_size=1, stride=1, padding=0
+        )
+
+        self.proj_v = nn.Conv2d(
+            self.nc, self.nc,
+            kernel_size=1, stride=1, padding=0
+        )
+
+        self.proj_out = nn.Conv2d(
+            self.nc, self.nc,
+            kernel_size=1, stride=1, padding=0
+        )
+
+        self.proj_drop = nn.Dropout(proj_drop, inplace=True)
+        self.attn_drop = nn.Dropout(attn_drop, inplace=True)
+
+        if self.use_pe and not self.no_off:
+            if self.dwc_pe:
+                self.rpe_table = nn.Conv2d(
+                    self.nc, self.nc, kernel_size=3, stride=1, padding=1, groups=self.nc)
+            elif self.fixed_pe:
+                self.rpe_table = nn.Parameter(
+                    torch.zeros(self.n_heads, self.q_h * self.q_w, self.kv_h * self.kv_w)
+                )
+                trunc_normal_(self.rpe_table, std=0.01)
+            elif self.log_cpb:
+                # Borrowed from Swin-V2
+                self.rpe_table = nn.Sequential(
+                    nn.Linear(2, 32, bias=True),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(32, self.n_group_heads, bias=False)
+                )
+            else:
+                self.rpe_table = nn.Parameter(
+                    torch.zeros(self.n_heads, self.q_h * 2 - 1, self.q_w * 2 - 1)
+                )
+                trunc_normal_(self.rpe_table, std=0.01)
+        else:
+            self.rpe_table = None
+
+    @torch.no_grad()
+    def _get_ref_points(self, H_key, W_key, B, dtype, device):
+
+        ref_y, ref_x = torch.meshgrid(
+            torch.linspace(0.5, H_key - 0.5, H_key, dtype=dtype, device=device),
+            torch.linspace(0.5, W_key - 0.5, W_key, dtype=dtype, device=device),
+            indexing='ij'
+        )
+        ref = torch.stack((ref_y, ref_x), -1)
+        ref[..., 1].div_(W_key - 1.0).mul_(2.0).sub_(1.0)
+        ref[..., 0].div_(H_key - 1.0).mul_(2.0).sub_(1.0)
+        ref = ref[None, ...].expand(B * self.n_groups, -1, -1, -1)  # B * g H W 2
+
+        return ref
+
+    @torch.no_grad()
+    def _get_q_grid(self, H, W, B, dtype, device):
+
+        ref_y, ref_x = torch.meshgrid(
+            torch.arange(0, H, dtype=dtype, device=device),
+            torch.arange(0, W, dtype=dtype, device=device),
+            indexing='ij'
+        )
+        ref = torch.stack((ref_y, ref_x), -1)
+        ref[..., 1].div_(W - 1.0).mul_(2.0).sub_(1.0)
+        ref[..., 0].div_(H - 1.0).mul_(2.0).sub_(1.0)
+        ref = ref[None, ...].expand(B * self.n_groups, -1, -1, -1)  # B * g H W 2
+
+        return ref
+
+    def forward(self, src, value):
+
+        B, C, H, W = src.size()
+        dtype, device = src.dtype, src.device
+
+        q = self.proj_q(src)
+        q_off = einops.rearrange(q, 'b (g c) h w -> (b g) c h w', g=self.n_groups, c=self.n_group_channels)
+        # 通过卷积生成 query offset
+        offset = self.conv_offset(q_off).contiguous()  # B * g 2 Hg Wg
+        Hk, Wk = offset.size(2), offset.size(3)
+        n_sample = Hk * Wk
+
+        # 2. offset range参数
+        if self.offset_range_factor >= 0 and not self.no_off:
+            offset_range = torch.tensor([1.0 / (Hk - 1.0), 1.0 / (Wk - 1.0)], device=device).reshape(1, 2, 1, 1)
+            offset = offset.tanh().mul(offset_range).mul(self.offset_range_factor)
+
+        offset = einops.rearrange(offset, 'b p h w -> b h w p')
+        # 2. 参考点生成
+        reference = self._get_ref_points(Hk, Wk, B, dtype, device)
+
+        if self.no_off:
+            offset = offset.fill_(0.0)
+
+        # 3. 参考点 + offset
+        if self.offset_range_factor >= 0:
+            pos = offset + reference
+        else:
+            pos = (offset + reference).clamp(-1., +1.)
+
+        # 4. 形变key, value
+        if self.no_off:
+            x_sampled = F.avg_pool2d(value, kernel_size=self.stride, stride=self.stride)
+            assert x_sampled.size(2) == Hk and x_sampled.size(3) == Wk, f"Size is {x_sampled.size()}"
+        else:
+            x_sampled = F.grid_sample(
+                input=value.reshape(B * self.n_groups, self.n_group_channels, H, W),
+                grid=pos[..., (1, 0)],  # y, x -> x, y
+                mode='bilinear', align_corners=True)  # B * g, Cg, Hg, Wg
+
+        x_sampled = x_sampled.reshape(B, C, 1, n_sample)
+
+        # 3. 注意力计算
+        q = q.reshape(B * self.n_heads, self.n_head_channels, H * W)
+        k = self.proj_k(x_sampled).reshape(B * self.n_heads, self.n_head_channels, n_sample)
+        v = self.proj_v(x_sampled).reshape(B * self.n_heads, self.n_head_channels, n_sample)
+
+        attn = torch.einsum('b c m, b c n -> b m n', q, k)  # B * h, HW, Ns
+        attn = attn.mul(self.scale)
+
+        if self.use_pe and (not self.no_off):
+
+            if self.dwc_pe:
+                residual_lepe = self.rpe_table(q.reshape(B, C, H, W)).reshape(B * self.n_heads, self.n_head_channels,
+                                                                              H * W)
+            elif self.fixed_pe:
+                rpe_table = self.rpe_table
+                attn_bias = rpe_table[None, ...].expand(B, -1, -1, -1)
+                attn = attn + attn_bias.reshape(B * self.n_heads, H * W, n_sample)
+            elif self.log_cpb:
+                q_grid = self._get_q_grid(H, W, B, dtype, device)
+                displacement = (
+                            q_grid.reshape(B * self.n_groups, H * W, 2).unsqueeze(2) - pos.reshape(B * self.n_groups,
+                                                                                                   n_sample,
+                                                                                                   2).unsqueeze(1)).mul(
+                    4.0)  # d_y, d_x [-8, +8]
+                displacement = torch.sign(displacement) * torch.log2(torch.abs(displacement) + 1.0) / np.log2(8.0)
+                attn_bias = self.rpe_table(displacement)  # B * g, H * W, n_sample, h_g
+                attn = attn + einops.rearrange(attn_bias, 'b m n h -> (b h) m n', h=self.n_group_heads)
+            else:
+                rpe_table = self.rpe_table
+                rpe_bias = rpe_table[None, ...].expand(B, -1, -1, -1)
+                q_grid = self._get_q_grid(H, W, B, dtype, device)
+                displacement = (
+                            q_grid.reshape(B * self.n_groups, H * W, 2).unsqueeze(2) - pos.reshape(B * self.n_groups,
+                                                                                                   n_sample,
+                                                                                                   2).unsqueeze(1)).mul(
+                    0.5)
+                attn_bias = F.grid_sample(
+                    input=einops.rearrange(rpe_bias, 'b (g c) h w -> (b g) c h w', c=self.n_group_heads,
+                                           g=self.n_groups),
+                    grid=displacement[..., (1, 0)],
+                    mode='bilinear', align_corners=True)  # B * g, h_g, HW, Ns
+
+                attn_bias = attn_bias.reshape(B * self.n_heads, H * W, n_sample)
+                attn = attn + attn_bias
+
+        attn = F.softmax(attn, dim=2)
+        attn = self.attn_drop(attn)
+
+        out = torch.einsum('b m n, b c n -> b c m', attn, v)
+
+        if self.use_pe and self.dwc_pe:
+            out = out + residual_lepe
+        out = out.reshape(B, C, H, W)
+
+        y = self.proj_drop(self.proj_out(out))
+
+        return y, pos.reshape(B, self.n_groups, Hk, Wk, 2), reference.reshape(B, self.n_groups, Hk, Wk, 2)
+
+class DAttentionBaselineV1(nn.Module):
+
+    def __init__(
+            self,
+            stride=8,
+            offset_range_factor=-1, use_pe=True, dwc_pe=False,
+            no_off=False, fixed_pe=False, ksize=9, log_cpb=False,
+            embed_dim=256, num_heads=8, num_groups=4,
+            attn_drop=0, proj_drop=0
+    ):
+        """
+            use_pe： 是否使用位置编码
+            stride: 可形变注意力的采样步长
+            offset_range_factor: 控制可形变注意力中偏移量的范围
+            use_pe: 默认使用rpe位置编码
+            offset_range_factor： 默认不开
+
+
+        """
+
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_channel = int(self.embed_dim // self.num_heads)
+        self.dwc_pe = dwc_pe
+        self.scale = self.embed_dim / self.num_heads ** -0.5
+        self.num_groups = int(num_groups)
+        # 将channel分为 n_groups, 每个group多个head,尽可能增加groups中形变的多样性
+        self.group_channel = int(self.embed_dim // self.num_groups)
+        self.group_heads = self.num_heads // self.num_groups
+
+        # 位置编码
+        self.use_pe = use_pe
+        self.fixed_pe = fixed_pe
+        self.no_off = no_off
+        self.offset_range_factor = offset_range_factor
+
+        self.ksize = ksize
+        self.log_cpb = log_cpb
+        self.stride = stride
+        kk = self.ksize
+        pad_size = kk // 2 if kk != stride else 0
+
+        # offset 生成卷积网络
+        self.conv_offset = nn.Sequential(
+            nn.Conv2d(self.group_channel, self.group_channel, kk, stride, pad_size, groups=self.group_channel),
+            LayerNormProxy(self.group_channel),
+            nn.GELU(),
+            nn.Conv2d(self.group_channel, 2, 1, 1, 0, bias=False)
+        )
+        if self.no_off:
+            for m in self.conv_offset.parameters():
+                m.requires_grad_(False)
+
+        # q, k, v投影
+        self.proj_q = nn.Conv2d(
+            self.embed_dim, self.embed_dim,
+            kernel_size=1, stride=1, padding=0
+        )
+
+        self.proj_k = nn.Conv2d(
+            self.embed_dim, self.embed_dim,
+            kernel_size=1, stride=1, padding=0
+        )
+
+        self.proj_v = nn.Conv2d(
+            self.embed_dim, self.embed_dim,
+            kernel_size=1, stride=1, padding=0
+        )
+
+        self.proj_out = nn.Conv2d(
+            self.embed_dim, self.embed_dim,
+            kernel_size=1, stride=1, padding=0
+        )
+
+        self.proj_drop = nn.Dropout(proj_drop, inplace=True)
+        self.attn_drop = nn.Dropout(attn_drop, inplace=True)
+        self.rpe_table = None
+
+    @torch.no_grad()
+    def _get_ref_points(self, H_key, W_key, B, dtype, device):
+
+        ref_y, ref_x = torch.meshgrid(
+            torch.linspace(0.5, H_key - 0.5, H_key, dtype=dtype, device=device),
+            torch.linspace(0.5, W_key - 0.5, W_key, dtype=dtype, device=device),
+            indexing='ij'
+        )
+        ref = torch.stack((ref_y, ref_x), -1)
+        ref[..., 1].div_(W_key - 1.0).mul_(2.0).sub_(1.0)
+        ref[..., 0].div_(H_key - 1.0).mul_(2.0).sub_(1.0)
+        ref = ref[None, ...].expand(B * self.num_groups, -1, -1, -1)  # B * g H W 2
+
+        return ref
+
+    @torch.no_grad()
+    def _get_q_grid(self, H, W, B, dtype, device):
+
+        ref_y, ref_x = torch.meshgrid(
+            torch.arange(0, H, dtype=dtype, device=device),
+            torch.arange(0, W, dtype=dtype, device=device),
+            indexing='ij'
+        )
+        ref = torch.stack((ref_y, ref_x), -1)
+        ref[..., 1].div_(W - 1.0).mul_(2.0).sub_(1.0)
+        ref[..., 0].div_(H - 1.0).mul_(2.0).sub_(1.0)
+        ref = ref[None, ...].expand(B * self.num_groups, -1, -1, -1)  # B * g H W 2
+
+        return ref
+
+    def forward(self, src, spatial_shape, value):
+        H, W = spatial_shape[0]
+        if self.use_pe and not self.no_off and self.rpe_table is None:
+            self.rpe_table = nn.Parameter(
+                torch.zeros(self.num_heads, W * 2 - 1, W * 2 - 1)
+            )
+            trunc_normal_(self.rpe_table, std=0.01)
+
+        src = einops.rearrange(src, 'b (h w) c -> b c h w', h=H, w=W)
+        value = einops.rearrange(value, 'b (h w) c -> b c h w', h=H, w=W)
+        B, C, H, W = src.size()
+        dtype, device = src.dtype, src.device
+
+        q = self.proj_q(src)
+        q_off = einops.rearrange(q, 'b (g c) h w -> (b g) c h w', g=self.num_groups, c=self.group_channel)
+        # 通过卷积生成 query offset
+        offset = self.conv_offset(q_off).contiguous()  # B * g 2 Hg Wg
+        Hk, Wk = offset.size(2), offset.size(3)
+        n_sample = Hk * Wk
+
+        # 2. offset range参数
+        if self.offset_range_factor >= 0 and not self.no_off:
+            offset_range = torch.tensor([1.0 / (Hk - 1.0), 1.0 / (Wk - 1.0)], device=device).reshape(1, 2, 1, 1)
+            offset = offset.tanh().mul(offset_range).mul(self.offset_range_factor)
+
+        offset = einops.rearrange(offset, 'b p h w -> b h w p')
+        # 2. 参考点生成
+        reference = self._get_ref_points(Hk, Wk, B, dtype, device)
+
+        if self.no_off:
+            offset = offset.fill_(0.0)
+
+        # 3. 参考点 + offset
+        if self.offset_range_factor >= 0:
+            pos = offset + reference
+        else:
+            pos = (offset + reference).clamp(-1., +1.)
+
+        # 4. 形变key, value
+        if self.no_off:
+            x_sampled = F.avg_pool2d(value, kernel_size=self.stride, stride=self.stride)
+            assert x_sampled.size(2) == Hk and x_sampled.size(3) == Wk, f"Size is {x_sampled.size()}"
+        else:
+            x_sampled = F.grid_sample(
+                input=value.reshape(B * self.num_groups, self.group_channel, H, W),
+                grid=pos[..., (1, 0)],  # y, x -> x, y
+                mode='bilinear', align_corners=True)  # B * g, Cg, Hg, Wg
+
+        x_sampled = x_sampled.reshape(B, C, 1, n_sample)
+
+        # 3. 注意力计算
+        q = q.reshape(B * self.num_heads, self.head_channel, H * W)
+        k = self.proj_k(x_sampled).reshape(B * self.num_heads, self.head_channel, n_sample)
+        v = self.proj_v(x_sampled).reshape(B * self.num_heads, self.head_channel, n_sample)
+
+        attn = torch.einsum('b c m, b c n -> b m n', q, k)  # B * h, HW, Ns
+        attn = attn.mul(self.scale)
+
+        if self.use_pe and (not self.no_off):
+
+            if self.dwc_pe:
+                residual_lepe = self.rpe_table(q.reshape(B, C, H, W)).reshape(B * self.num_heads, self.head_channel,
+                                                                              H * W)
+            elif self.fixed_pe:
+                rpe_table = self.rpe_table
+                attn_bias = rpe_table[None, ...].expand(B, -1, -1, -1)
+                attn = attn + attn_bias.reshape(B * self.num_heads, H * W, n_sample)
+            elif self.log_cpb:
+                q_grid = self._get_q_grid(H, W, B, dtype, device)
+                displacement = (
+                            q_grid.reshape(B * self.num_groups, H * W, 2).unsqueeze(2) - pos.reshape(B * self.num_groups,
+                                                                                                   n_sample,
+                                                                                                   2).unsqueeze(1)).mul(
+                    4.0)  # d_y, d_x [-8, +8]
+                displacement = torch.sign(displacement) * torch.log2(torch.abs(displacement) + 1.0) / np.log2(8.0)
+                attn_bias = self.rpe_table(displacement)  # B * g, H * W, n_sample, h_g
+                attn = attn + einops.rearrange(attn_bias, 'b m n h -> (b h) m n', h=self.group_heads)
+            else:
+                rpe_table = self.rpe_table
+                rpe_bias = rpe_table[None, ...].expand(B, -1, -1, -1)
+                q_grid = self._get_q_grid(H, W, B, dtype, device)
+                displacement = (
+                            q_grid.reshape(B * self.num_groups, H * W, 2).unsqueeze(2) - pos.reshape(B * self.num_groups,
+                                                                                                   n_sample,
+                                                                                                   2).unsqueeze(1)).mul(
+                    0.5)
+                attn_bias = F.grid_sample(
+                    input=einops.rearrange(rpe_bias, 'b (g c) h w -> (b g) c h w', c=self.group_heads,
+                                           g=self.num_groups),
+                    grid=displacement[..., (1, 0)],
+                    mode='bilinear', align_corners=True)  # B * g, h_g, HW, Ns
+
+                attn_bias = attn_bias.reshape(B * self.num_heads, H * W, n_sample)
+                attn = attn + attn_bias
+
+        attn = F.softmax(attn, dim=2)
+        attn = self.attn_drop(attn)
+
+        out = torch.einsum('b m n, b c n -> b c m', attn, v)
+
+        if self.use_pe and self.dwc_pe:
+            out = out + residual_lepe
+        out = out.reshape(B, C, H, W)
+
+        y = self.proj_drop(self.proj_out(out))
+
+        y = einops.rearrange(y, 'b c h w  -> b (h w) c')
+        return y, pos.reshape(B, self.num_groups, Hk, Wk, 2), reference.reshape(B, self.num_groups, Hk, Wk, 2)
+
+
+class PyramidAttention(nn.Module):
+
+    def __init__(self, dim, num_heads=8, attn_drop=0., proj_drop=0., sr_ratio=1):
+
+        super().__init__()
+
+        assert dim % num_heads == 0, f"dim {dim} should be divided by num_heads {num_heads}."
+
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.q = nn.Conv2d(dim, dim, 1, 1, 0)
+        self.kv = nn.Conv2d(dim, dim * 2, 1, 1, 0)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Conv2d(dim, dim, 1, 1, 0)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+        self.sr_ratio = sr_ratio
+        if sr_ratio > 1:
+            self.proj_ds = nn.Sequential(
+                nn.Conv2d(dim, dim, kernel_size=sr_ratio, stride=sr_ratio),
+                LayerNormProxy(dim)
+            )
+
+    def forward(self, x):
+
+        B, C, H, W = x.size()
+        Nq = H * W
+        q = self.q(x)
+
+        if self.sr_ratio > 1:
+            x_ds = self.proj_ds(x)
+            kv = self.kv(x_ds)
+        else:
+            kv = self.kv(x)
+
+        k, v = torch.chunk(kv, 2, dim=1)
+        Nk = (H // self.sr_ratio) * (W // self.sr_ratio)
+        q = q.reshape(B * self.num_heads, self.head_dim, Nq).mul(self.scale)
+        k = k.reshape(B * self.num_heads, self.head_dim, Nk)
+        v = v.reshape(B * self.num_heads, self.head_dim, Nk)
+        attn = torch.einsum('b c m, b c n -> b m n', q, k)
+        attn = F.softmax(attn, dim=2)
+        attn = self.attn_drop(attn)
+
+        x = torch.einsum('b m n, b c n -> b c m', attn, v)
+        x = x.reshape(B, C, H, W)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+
+        return x, None, None
+
+
+class TransformerMLP(nn.Module):
+
+    def __init__(self, channels, expansion, drop):
+        super().__init__()
+
+        self.dim1 = channels
+        self.dim2 = channels * expansion
+        self.chunk = nn.Sequential()
+        self.chunk.add_module('linear1', nn.Linear(self.dim1, self.dim2))
+        self.chunk.add_module('act', nn.GELU())
+        self.chunk.add_module('drop1', nn.Dropout(drop, inplace=True))
+        self.chunk.add_module('linear2', nn.Linear(self.dim2, self.dim1))
+        self.chunk.add_module('drop2', nn.Dropout(drop, inplace=True))
+
+    def forward(self, x):
+        _, _, H, W = x.size()
+        x = einops.rearrange(x, 'b c h w -> b (h w) c')
+        x = self.chunk(x)
+        x = einops.rearrange(x, 'b (h w) c -> b c h w', h=H, w=W)
+        return x
 
 
 class LayerNormProxy(nn.Module):
@@ -19,446 +669,35 @@ class LayerNormProxy(nn.Module):
         return einops.rearrange(x, 'b h w c -> b c h w')
 
 
-class DAttentionBaselineGQA(nn.Module): # Renamed class for clarity
-    """
-    根据数据动态计算采样位置，然后进行加权 (加入GQA特性)
-    """
-    def __init__(
-            self, q_size, kv_size, n_heads, n_head_channels, n_groups, # n_groups for offset calculation
-            n_kv_groups=None, # Number of Key/Value groups for GQA
-            attn_drop=0.0, proj_drop=0.0, stride=-1,
-            offset_range_factor=1, use_pe=False, dwc_pe=False,
-            no_off=False, fixed_pe=False, ksize = 9, log_cpb=False
-    ):
+class TransformerMLPWithConv(nn.Module):
 
+    def __init__(self, channels, expansion, drop):
         super().__init__()
-        self.dwc_pe = dwc_pe
-        self.n_head_channels = n_head_channels
-        self.scale = self.n_head_channels ** -0.5
-        self.n_heads = n_heads # Number of Query heads
-        self.n_groups = n_groups # Number of groups for offset calculation
 
-        # --- GQA specific parameters ---
-        if n_kv_groups is None:
-            # Default: GQA groups = Offset groups for simplicity
-            # If you need them to be different, the RPE logic (log_cpb, grid_sample) needs careful adaptation
-            self.n_kv_groups = n_groups
-            print(f"Warning: n_kv_groups not specified, defaulting to n_groups ({self.n_groups}).")
-        else:
-            self.n_kv_groups = n_kv_groups
-
-        assert n_heads % self.n_kv_groups == 0, f"n_heads ({n_heads}) must be divisible by n_kv_groups ({self.n_kv_groups})"
-        self.n_q_per_kv = n_heads // self.n_kv_groups # Number of Query heads per Key/Value group
-        # --- End GQA parameters ---
-
-        self.q_h, self.q_w = q_size
-        # self.kv_h, self.kv_w = kv_size
-        self.kv_h, self.kv_w = self.q_h // stride, self.q_w // stride
-
-        self.nc = n_head_channels * n_heads # Total channels for Q and Output
-        self.kv_nc = n_head_channels * self.n_kv_groups # Total channels for K and V
-
-        # Channel calculation per offset group
-        assert self.nc % self.n_groups == 0, f"Total channels ({self.nc}) must be divisible by n_groups ({self.n_groups})"
-        self.n_group_channels = self.nc // self.n_groups # Channels per offset group
-
-        self.use_pe = use_pe
-        self.fixed_pe = fixed_pe
-        self.no_off = no_off
-        self.offset_range_factor = offset_range_factor
-        self.ksize = ksize
-        self.log_cpb = log_cpb
-        self.stride = stride
-        kk = self.ksize
-        pad_size = kk // 2 if kk != stride else 0
-
-        # 可形变偏移生成 (Uses n_groups for offset calculation grouping)
-        self.conv_offset = nn.Sequential(
-            nn.Conv2d(self.n_group_channels, self.n_group_channels, kk, stride, pad_size, groups=self.n_group_channels),
-            LayerNormProxy(self.n_group_channels),
-            nn.GELU(),
-            nn.Conv2d(self.n_group_channels, 2, 1, 1, 0, bias=False)
+        self.dim1 = channels
+        self.dim2 = channels * expansion
+        self.linear1 = nn.Sequential(
+            nn.Conv2d(self.dim1, self.dim2, 1, 1, 0),
+            # nn.GELU(),
+            # nn.BatchNorm2d(self.dim2, eps=1e-5)
         )
-        if self.no_off:
-            for m in self.conv_offset.parameters():
-                m.requires_grad_(False)
-
-        # query, key, value的投影
-        self.proj_q = nn.Conv2d(
-            self.nc, self.nc, # Output: n_heads * n_head_channels
-            kernel_size=1, stride=1, padding=0
+        self.drop1 = nn.Dropout(drop, inplace=True)
+        self.act = nn.GELU()
+        # self.bn = nn.BatchNorm2d(self.dim2, eps=1e-5)
+        self.linear2 = nn.Sequential(
+            nn.Conv2d(self.dim2, self.dim1, 1, 1, 0),
+            # nn.BatchNorm2d(self.dim1, eps=1e-5)
         )
-
-        self.proj_k = nn.Conv2d(
-            self.nc, self.kv_nc, # Output: n_kv_groups * n_head_channels
-            kernel_size=1, stride=1, padding=0
-        )
-
-        self.proj_v = nn.Conv2d(
-            self.nc, self.kv_nc, # Output: n_kv_groups * n_head_channels
-            kernel_size=1, stride=1, padding=0
-        )
-
-        # 对注意力的输出进行投影，生成最终的特征图
-        self.proj_out = nn.Conv2d(
-            self.nc, self.nc, # Input: n_heads * n_head_channels
-            kernel_size=1, stride=1, padding=0
-        )
-
-        # 注意力权重和输出投影的dropout率
-        self.proj_drop = nn.Dropout(proj_drop, inplace=True)
-        self.attn_drop = nn.Dropout(attn_drop, inplace=True)
-
-        # 是否使用位置编码
-        if self.use_pe and not self.no_off:
-            if self.dwc_pe:
-                # Applies to output, shape should be compatible
-                self.rpe_table = nn.Conv2d(
-                    self.nc, self.nc, kernel_size=3, stride=1, padding=1, groups=self.nc)
-            elif self.fixed_pe:
-                # Bias per query head, shape seems okay
-                self.rpe_table = nn.Parameter(
-                    torch.zeros(self.n_heads, self.q_h * self.q_w, self.kv_h * self.kv_w)
-                )
-                trunc_normal_(self.rpe_table, std=0.01)
-            elif self.log_cpb:
-                # Assuming n_groups == n_kv_groups here
-                # Output dimension is number of query heads per group
-                assert self.n_groups == self.n_kv_groups, "log_cpb requires n_groups == n_kv_groups in this implementation"
-                self.rpe_table = nn.Sequential(
-                    nn.Linear(2, 32, bias=True),
-                    nn.ReLU(inplace=True),
-                    nn.Linear(32, self.n_q_per_kv, bias=False) # Output heads per group
-                )
-            else: # Grid Sample RPE
-                # Assuming n_groups == n_kv_groups here
-                assert self.n_groups == self.n_kv_groups, "Grid Sample RPE requires n_groups == n_kv_groups in this implementation"
-                # Stores bias per query head? Table size relates to relative positions.
-                self.rpe_table = nn.Parameter(
-                    torch.zeros(self.n_heads, self.q_h * 2 - 1, self.q_w * 2 - 1)
-                )
-                trunc_normal_(self.rpe_table, std=0.01)
-        else:
-            self.rpe_table = None
-
-    @torch.no_grad()
-    def _get_ref_points(self, H_key, W_key, B, dtype, device):
-        """
-        生成参考点，用于计算偏移
-        Uses n_groups (offset groups)
-        """
-        ref_y, ref_x = torch.meshgrid(
-            torch.linspace(0.5, H_key - 0.5, H_key, dtype=dtype, device=device),
-            torch.linspace(0.5, W_key - 0.5, W_key, dtype=dtype, device=device),
-            indexing='ij'
-        )
-        ref = torch.stack((ref_y, ref_x), -1)
-        ref[..., 1].div_(W_key - 1.0).mul_(2.0).sub_(1.0)
-        ref[..., 0].div_(H_key - 1.0).mul_(2.0).sub_(1.0)
-        # Expand based on offset groups
-        ref = ref[None, ...].expand(B * self.n_groups, -1, -1, -1)  # B * g H W 2
-        return ref
-
-    @torch.no_grad()
-    def _get_q_grid(self, H, W, B, dtype, device):
-        """
-        生成查询网格，用于计算位置编码
-        Uses n_groups (offset groups) for displacement calculation in RPE
-        """
-        ref_y, ref_x = torch.meshgrid(
-            torch.arange(0, H, dtype=dtype, device=device),
-            torch.arange(0, W, dtype=dtype, device=device),
-            indexing='ij'
-        )
-        ref = torch.stack((ref_y, ref_x), -1)
-        ref[..., 1].div_(W - 1.0).mul_(2.0).sub_(1.0)
-        ref[..., 0].div_(H - 1.0).mul_(2.0).sub_(1.0)
-        # Expand based on offset groups
-        ref = ref[None, ...].expand(B * self.n_groups, -1, -1, -1)  # B * g H W 2
-        return ref
+        self.drop2 = nn.Dropout(drop, inplace=True)
+        self.dwc = nn.Conv2d(self.dim2, self.dim2, 3, 1, 1, groups=self.dim2)
 
     def forward(self, x):
+        x = self.linear1(x)
+        x = self.drop1(x)
+        x = x + self.dwc(x)
+        x = self.act(x)
+        # x = self.bn(x)
+        x = self.linear2(x)
+        x = self.drop2(x)
 
-        B, C, H, W = x.size()
-        dtype, device = x.dtype, x.device
-        assert C == self.nc, f"Input channel {C} != expected {self.nc}"
-
-        # 1. 通过conv_offset生成偏移 (Using n_groups)
-        q_in = self.proj_q(x)
-        q_off = einops.rearrange(q_in, 'b (g c) h w -> (b g) c h w', g=self.n_groups, c=self.n_group_channels)
-        offset = self.conv_offset(q_off).contiguous()  # B * g 2 Hg Wg
-
-        # 参考点的大小和offset相同
-        Hk, Wk = offset.size(2), offset.size(3)
-        n_sample = Hk * Wk # Number of sampled points (keys/values)
-
-        # 2. offset_range_factor控制偏移范围
-        if self.offset_range_factor >= 0 and not self.no_off:
-            offset_range = torch.tensor([1.0 / (Hk - 1.0), 1.0 / (Wk - 1.0)], device=device).reshape(1, 2, 1, 1)
-            offset = offset.tanh().mul(offset_range).mul(self.offset_range_factor)
-
-        offset = einops.rearrange(offset, 'b p h w -> b h w p') # (B * g) Hg Wg 2
-        # 3. 计算参考点 (Using n_groups)
-        reference = self._get_ref_points(Hk, Wk, B, dtype, device) # (B * g) Hg Wg 2
-
-        # 4. 计算采样位置
-        if self.no_off:
-            offset = offset.fill_(0.0)
-
-        if self.offset_range_factor >= 0:
-            pos = offset + reference # (B*g) Hg Wg 2
-        else:
-            pos = (offset + reference).clamp(-1., +1.)
-
-        # 5. 采样 Key/Value 特征
-        # Input to sampling: original features x, potentially reshaped based on offset groups if needed
-        # Here, grid_sample takes input (N, C_in, H_in, W_in) and grid (N, H_out, W_out, 2)
-        # We want N = B * n_groups, C_in = n_group_channels ? No, needs full channel dim C.
-        # Reshape x to match the grid's N dimension: (B * g, Cg, H, W)? No, C should be full C.
-        # Let's assume grid_sample can handle N mismatch if input is B,C,H,W and grid is (B*g),Hg,Wg,2? Check docs.
-        # It seems grid_sample expects N in input and grid to match.
-        # So, we either repeat x or adapt the sampling.
-        # Let's repeat x to match the grouped pos grid.
-        x_for_sampling = einops.rearrange(x, 'b c h w -> b 1 c h w')
-        x_for_sampling = x_for_sampling.expand(B, self.n_groups, C, H, W)
-        x_for_sampling = einops.rearrange(x_for_sampling, 'b g c h w -> (b g) c h w')
-
-        if self.no_off:
-            # If no offset, avg_pool original x. Does not need grouping.
-            kv_sampled = F.avg_pool2d(x, kernel_size=self.stride, stride=self.stride)
-            assert kv_sampled.size(2) == Hk and kv_sampled.size(3) == Wk, f"Size is {kv_sampled.size()}"
-            # Reshape to match expected kv format after sampling
-            kv_sampled = einops.rearrange(kv_sampled, 'b c h w -> b c 1 (h w)') # B, C, 1, Ns
-        else:
-            # Use the grouped x for sampling with the grouped pos grid
-            kv_sampled = F.grid_sample(
-                input=x_for_sampling, # (B*g) C H W
-                grid=pos[..., (1, 0)],  # y, x -> x, y # (B*g) Hg Wg 2
-                mode='bilinear', align_corners=True)  # Output: (B*g) C Hg Wg
-
-            # Regroup results back: (B*g) C Hg Wg -> B C g (Hg Wg) -> B C 1 (g Hg Wg)? No.
-            # Output should be features corresponding to K/V for all heads.
-            # We sampled features at Hk*Wk locations using groups. The features C are shared.
-            # Rearrange to B, C, 1, Ns where Ns = Hk * Wk
-            kv_sampled = einops.rearrange(kv_sampled, '(b g) c h w -> b c g (h w)', b=B, g=self.n_groups)
-            # Now, how to combine the groups? The sampling was done per group.
-            # If n_groups == n_kv_groups, maybe we take the result directly?
-            # Let's assume the sampled features are the same regardless of group if offset is same.
-            # Average over groups? Or just take one group's result?
-            # Let's average over the group dimension for robustness, assuming sampling is similar across groups.
-            # This might need revision depending on intended group behavior.
-            # Alternative: If offset calc uses shared weights across groups, results might be identical.
-            # Let's average for now.
-            kv_sampled = kv_sampled.mean(dim=2, keepdim=True) # B, C, 1, Ns (Ns=Hk*Wk)
-            # If n_groups=1, this mean does nothing.
-
-        # 6.计算 Query, Key, Value
-        q = q_in.reshape(B * self.n_heads, self.n_head_channels, H * W) # (B*h) Ch (H*W)
-
-        # Project K and V from the *sampled* features
-        k = self.proj_k(kv_sampled) # B, kv_nc, 1, Ns
-        v = self.proj_v(kv_sampled) # B, kv_nc, 1, Ns
-
-        # Reshape K, V for GQA
-        # kv_nc = n_kv_groups * n_head_channels
-        # Ns = n_sample = Hk * Wk
-        k = k.reshape(B, self.n_kv_groups, self.n_head_channels, n_sample) # B g_kv Ch Ns
-        v = v.reshape(B, self.n_kv_groups, self.n_head_channels, n_sample) # B g_kv Ch Ns
-
-        # Repeat K, V heads for GQA logic
-        # Repeat g_kv dimension n_q_per_kv times to match n_heads
-        k = k.repeat_interleave(self.n_q_per_kv, dim=1) # B (g_kv*n_q_per_kv)=h Ch Ns
-        v = v.repeat_interleave(self.n_q_per_kv, dim=1) # B (g_kv*n_q_per_kv)=h Ch Ns
-
-        # Final reshape for attention calculation
-        k = k.reshape(B * self.n_heads, self.n_head_channels, n_sample) # (B*h) Ch Ns
-        v = v.reshape(B * self.n_heads, self.n_head_channels, n_sample) # (B*h) Ch Ns
-
-        # 7. 计算注意力权重
-        attn = torch.einsum('b c m, b c n -> b m n', q, k)  # (B*h) (H*W) Ns
-        attn = attn.mul(self.scale)
-
-        # 8. 加入位置编码 (RPE)
-        if self.use_pe and (not self.no_off):
-            if self.dwc_pe:
-                # Applied to output value later
-                residual_lepe = self.rpe_table(q_in).reshape(B * self.n_heads, self.n_head_channels, H * W)
-            elif self.fixed_pe:
-                # Bias per query head, shape (h, HW, Ns) - Needs Ns part correct
-                # Assuming kv_h * kv_w = n_sample
-                assert self.kv_h * self.kv_w == n_sample, "fixed_pe requires kv_size to match sampling size"
-                rpe_table = self.rpe_table # h (H*W) (Hk*Wk)
-                attn_bias = rpe_table[None, ...].expand(B, -1, -1, -1) # B h (H*W) Ns
-                attn = attn + attn_bias.reshape(B * self.n_heads, H * W, n_sample) # (B*h) (H*W) Ns
-            elif self.log_cpb:
-                # Assumes n_groups == n_kv_groups
-                q_grid = self._get_q_grid(H, W, B, dtype, device) # (B*g) H W 2
-                # pos was (B*g) Hg Wg 2 -> need (B*g) Ns 2
-                pos_rpe = einops.rearrange(pos, 'b h w c -> b (h w) c') # (B*g) Ns 2
-                displacement = (
-                            q_grid.reshape(B * self.n_groups, H * W, 2).unsqueeze(2) - pos_rpe.unsqueeze(1)
-                           ).mul(4.0) # (B*g) HW Ns 2
-                displacement = torch.sign(displacement) * torch.log2(torch.abs(displacement) + 1.0) / np.log2(8.0)
-                # RPE table output: heads per group
-                attn_bias = self.rpe_table(displacement)  # (B*g) HW Ns h_per_g
-                # Rearrange to match attention score shape (B*h) HW Ns
-                attn = attn + einops.rearrange(attn_bias, '(b g) m n h_g -> (b g h_g) m n',
-                                               g=self.n_groups, h_g=self.n_q_per_kv) # (B*h) HW Ns
-            else: # Grid Sample RPE
-                # Assumes n_groups == n_kv_groups
-                rpe_table = self.rpe_table # h (2H-1) (2W-1)
-                # Expand rpe table to batch dim B
-                rpe_bias = rpe_table[None, ...].expand(B, -1, -1, -1) # B h (2H-1) (2W-1)
-                q_grid = self._get_q_grid(H, W, B, dtype, device) # (B*g) H W 2
-                pos_rpe = einops.rearrange(pos, 'b h w c -> b (h w) c') # (B*g) Ns 2
-                displacement = (
-                            q_grid.reshape(B * self.n_groups, H * W, 2).unsqueeze(2) - pos_rpe.unsqueeze(1)
-                           ).mul(0.5) # (B*g) HW Ns 2 --> range [-1, 1] ? Check DAttention paper
-                # Need to sample from B h (2H-1) (2W-1) using grid (B*g) HW Ns 2
-                # Input to grid_sample: N C H_in W_in ; Grid: N H_out W_out 2
-                # Here Input N=B, C=h, H=2H-1, W=2W-1
-                # Grid N=(B*g), H_out=HW, W_out=Ns
-                # Need N to match. Reshape/repeat rpe_bias or displacement.
-                # Let's repeat rpe_bias B h ... -> (B*g) h ... ? Seems complex.
-                # Alternative: Reshape displacement (B*g) HW Ns 2 -> B HW (g*Ns) 2 ? No.
-                # --- Simplification: Assume n_groups=1 for Grid Sample RPE for now ---
-                if self.n_groups != 1:
-                     raise NotImplementedError("Grid Sample RPE with n_groups > 1 is complex to implement correctly with GQA grouping mismatch, not implemented yet.")
-                # If n_groups=1, grid is B HW Ns 2
-                attn_bias = F.grid_sample(
-                    input=rpe_bias.permute(0, 1, 3, 2), # B h (2W-1) (2H-1) <- W, H order? Check grid sample doc
-                                                       # Let's assume original H, W order: B h (2H-1) (2W-1)
-                    grid=displacement[..., (1, 0)], # B HW Ns 2 (x, y)
-                    mode='bilinear', align_corners=True, padding_mode='border'
-                 ) # Output: B h HW Ns
-                attn_bias = attn_bias.reshape(B * self.n_heads, H * W, n_sample) # (B*h) HW Ns
-                attn = attn + attn_bias
-
-        attn = F.softmax(attn, dim=2)
-        attn = self.attn_drop(attn)
-
-        # 9. 计算输出
-        out = torch.einsum('b m n, b c n -> b c m', attn, v) # (B*h) Ch (H*W)
-
-        if self.use_pe and self.dwc_pe:
-            # Add residual PE if using DWC PE
-            out = out + residual_lepe # (B*h) Ch (H*W)
-
-        out = out.reshape(B, C, H, W)
-
-        # 10. 输出投影
-        y = self.proj_drop(self.proj_out(out)) # B C H W
-
-        # Return format similar to original
-        # Reshape pos and reference back to B g ... format
-        pos_out = einops.rearrange(pos, '(b g) h w c -> b g h w c', b=B, g=self.n_groups)
-        ref_out = einops.rearrange(reference, '(b g) h w c -> b g h w c', b=B, g=self.n_groups)
-
-        return y, pos_out, ref_out
-
-
-if __name__ == '__main__':
-    # 定义输入张量和参数
-    B = 2
-    H = 14
-    W = 14
-    C = 96  # Embed Dim
-    n_heads = 8
-    n_head_channels = C // n_heads
-    stride = 2
-    offset_groups = 4 # For offset calculation
-    kv_groups = 2 # For GQA (must divide n_heads)
-
-    q_size = (H, W)
-    kv_size = (H // stride, W // stride) # Not directly used in init, calculated inside
-
-    # Create input tensor
-    x = torch.randn(B, C, H, W)
-
-    # Instantiate the GQA Attention module
-    # Note: Using n_groups=offset_groups, n_kv_groups=kv_groups
-    attn_gqa = DAttentionBaselineGQA(
-        q_size=q_size,
-        kv_size=kv_size, # Placeholder, calculated internally based on stride
-        n_heads=n_heads,
-        n_head_channels=n_head_channels,
-        n_groups=offset_groups, # Grouping for offset calculation
-        n_kv_groups=kv_groups,  # GQA specific: number of K/V groups
-        attn_drop=0.1,
-        proj_drop=0.1,
-        stride=stride,
-        offset_range_factor=2,
-        use_pe=True, # Enable PE for testing RPE paths
-        dwc_pe=False,
-        no_off=False,
-        fixed_pe=False, # Test log_cpb or grid sample RPE
-        ksize=3,
-        log_cpb=True # Test log_cpb RPE (requires n_groups==n_kv_groups)
-        #log_cpb=False # Enable this and set n_groups=1 to test grid sample RPE
-    )
-
-    # Test case where n_groups != n_kv_groups for log_cpb/grid RPE (should raise error)
-    try:
-        attn_gqa_mismatch = DAttentionBaselineGQA(
-            q_size=q_size, kv_size=kv_size, n_heads=n_heads, n_head_channels=n_head_channels,
-            n_groups=4, n_kv_groups=2, stride=stride, use_pe=True, log_cpb=True # Mismatch
-        )
-        # This part should not be reached if the assert works
-        print("Error: Instantiation with n_groups != n_kv_groups for log_cpb didn't raise error.")
-    except AssertionError as e:
-        print(f"Successfully caught assertion for RPE group mismatch: {e}")
-    except NotImplementedError as e:
-         print(f"Successfully caught NotImplementedError for RPE group mismatch: {e}")
-
-
-    # Set n_groups = n_kv_groups for log_cpb/grid sample RPE to work in this implementation
-    if attn_gqa.log_cpb or (not attn_gqa.dwc_pe and not attn_gqa.fixed_pe):
-         assert attn_gqa.n_groups == attn_gqa.n_kv_groups, "Test setup requires n_groups == n_kv_groups for selected RPE"
-         # Or if using grid sample RPE, need n_groups=1 for current implementation
-         if not attn_gqa.log_cpb and not attn_gqa.dwc_pe and not attn_gqa.fixed_pe:
-             assert attn_gqa.n_groups == 1, "Test setup for Grid Sample RPE requires n_groups=1"
-
-
-    # Forward pass
-    attn_gqa.eval() # Use eval mode for dropout etc unless training
-    with torch.no_grad(): # Disable gradient calculation for simple test
-        y, pos, ref = attn_gqa(x)
-
-    print("Input shape:", x.shape)
-    print("Output shape:", y.shape)
-    print("Sampled pos shape:", pos.shape) # B g Hg Wg 2
-    print("Reference points shape:", ref.shape) # B g Hg Wg 2
-
-    # Verify output shape
-    assert y.shape == x.shape, f"Output shape {y.shape} does not match input shape {x.shape}"
-    print("\nGQA Attention module test passed.")
-
-    # Example with fixed PE (should work regardless of group matching)
-    print("\nTesting with fixed PE:")
-    attn_gqa_fixedpe = DAttentionBaselineGQA(
-        q_size=q_size, kv_size=kv_size, n_heads=n_heads, n_head_channels=n_head_channels,
-        n_groups=4, n_kv_groups=2, # Groups can mismatch for fixed PE
-        stride=stride, use_pe=True, fixed_pe=True
-    )
-    attn_gqa_fixedpe.eval()
-    with torch.no_grad():
-        y_fixed, _, _ = attn_gqa_fixedpe(x)
-    print("Input shape:", x.shape)
-    print("Output shape (fixed PE):", y_fixed.shape)
-    assert y_fixed.shape == x.shape
-    print("Fixed PE test passed.")
-
-    # Example with DWC PE (should work regardless of group matching)
-    print("\nTesting with DWC PE:")
-    attn_gqa_dwcpe = DAttentionBaselineGQA(
-        q_size=q_size, kv_size=kv_size, n_heads=n_heads, n_head_channels=n_head_channels,
-        n_groups=4, n_kv_groups=2, # Groups can mismatch for DWC PE
-        stride=stride, use_pe=True, dwc_pe=True
-    )
-    attn_gqa_dwcpe.eval()
-    with torch.no_grad():
-        y_dwc, _, _ = attn_gqa_dwcpe(x)
-    print("Input shape:", x.shape)
-    print("Output shape (DWC PE):", y_dwc.shape)
-    assert y_dwc.shape == x.shape
-    print("DWC PE test passed.")
+        return x

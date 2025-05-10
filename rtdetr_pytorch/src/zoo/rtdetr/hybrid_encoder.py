@@ -16,7 +16,8 @@ from src.core import register
 
 __all__ = ['HybridEncoder']
 
-from ..deformable_attention.encoder.dat_blocks import DeformableMHAGQA
+from ..deformable_attention.dat_blocks import DAttentionBaselineV1
+
 from ..deformable_attention.ms_deformable_attention import MSDeformableAttentionGQA
 
 
@@ -257,13 +258,13 @@ class CrossAttentionEncoderLayer(nn.Module):
 
         # Self attention
         if self.deformable_encoder:
-            self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=1, num_points=num_points)
+            self.self_attn = DAttentionBaselineV1(embed_dim=d_model, num_heads=nhead, num_groups=nhead/2)
         else:
             self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
 
         # Cross attention between different feature levels
         if self.use_cross_attention:
-            self.cross_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=num_levels, num_points=num_points)
+            self.cross_attn = DAttentionBaselineV1(embed_dim=d_model, num_heads=nhead, num_groups=nhead/2)
 
 
         # Feed forward network
@@ -292,9 +293,9 @@ class CrossAttentionEncoderLayer(nn.Module):
         if self.normalize_before:
             src = self.norm1(src)
 
-        q = k = self.with_pos_embed(src, pos_embed)
+        q = k = src
         if self.deformable_encoder:
-            src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
+            src2, _, _ = self.self_attn(q, spatial_shapes, value=src)
         else:
             src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
         src = residual + self.dropout1(src2)
@@ -308,12 +309,13 @@ class CrossAttentionEncoderLayer(nn.Module):
                 if self.normalize_before:
                     src = self.norm2(src)
 
-                src2, _ = self.cross_attn(
-                    self.with_pos_embed(src, pos_embed),
-                    reference_points,
+                src2, _, _ = self.cross_attn(
+                    src,
+                    spatial_shapes,
+                    # reference_points,
                     memory,
-                    memory_spatial_shapes,
-                    src_mask
+                    # memory_spatial_shapes,
+                    # src_mask
                 )
                 src = residual + self.dropout2(src2)
                 if not self.normalize_before:
@@ -477,23 +479,23 @@ class HybridEncoder(nn.Module):
                 )
             )
 
-        # encoder_layer = CrossAttentionEncoderLayer(
-        #     hidden_dim,
-        #     nhead=nhead,
-        #     dim_feedforward=dim_feedforward,
-        #     dropout=dropout,
-        #     activation=enc_act,
-        #     deformable_encoder=deformable_encoder,
-        #     num_levels=len(self.in_channels),
-        #     num_points=num_cross_attention_points,
-        #     use_cross_attention=self.use_cross_attention,
-        # )
-        # self.encoder = CrossAttentionEncoder(
-        #     encoder_layer,
-        #     num_encoder_layers,
-        #     deformable_encoder=deformable_encoder,
-        #     use_cross_attention=self.use_cross_attention
-        # )
+        encoder_layer = CrossAttentionEncoderLayer(
+            hidden_dim,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=enc_act,
+            deformable_encoder=deformable_encoder,
+            num_levels=len(self.in_channels),
+            num_points=num_cross_attention_points,
+            use_cross_attention=self.use_cross_attention,
+        )
+        self.encoder = CrossAttentionEncoder(
+            encoder_layer,
+            num_encoder_layers,
+            deformable_encoder=deformable_encoder,
+            use_cross_attention=self.use_cross_attention
+        )
             # self.encoder = nn.ModuleList([])
             # for _ in range(len(use_encoder_idx)):
             #     encoder_layer = CrossAttentionEncoderLayer(
@@ -665,10 +667,10 @@ class HybridEncoder(nn.Module):
     def forward(self, feats):
         assert len(feats) == len(self.in_channels)
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
-        # if self.use_global_attention:
-        #     proj_feats = self.forward_global_attention(proj_feats)
-        # else:
-        #     proj_feats = self.forward_cross_attention(proj_feats)
+        if self.use_global_attention:
+            proj_feats = self.forward_global_attention(proj_feats)
+        else:
+            proj_feats = self.forward_cross_attention(proj_feats)
 
         if self.use_fpn:
         # broadcasting and fusion

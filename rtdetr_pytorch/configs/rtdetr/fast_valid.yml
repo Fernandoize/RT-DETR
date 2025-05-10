@@ -83,11 +83,11 @@ HybridEncoder:
   expansion: 0.5
   deformable_encoder: True
   use_cross_attention: False
-  use_global_attention: True
+  use_global_attention: False
   use_fpn: False
   dropout: 0.1
   eval_spatial_size: [320, 320]
-  use_encoder_idx: [0, 1]
+  use_encoder_idx: [1]
 
 RTDETRTransformer:
   # dim 设置为64
