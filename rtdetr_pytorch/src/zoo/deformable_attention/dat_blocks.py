@@ -510,6 +510,7 @@ class DAttentionBaselineV1(nn.Module):
 
         # 4. 形变key, value
         pos = pos.to(src.device)  # 确保 pos 在正确的设备上
+        value = value.to(src.device)
         if self.no_off:
             x_sampled = F.avg_pool2d(value, kernel_size=self.stride, stride=self.stride)
             assert x_sampled.size(2) == Hk and x_sampled.size(3) == Wk, f"Size is {x_sampled.size()}"
