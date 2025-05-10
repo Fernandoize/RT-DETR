@@ -510,7 +510,6 @@ class DAttentionBaselineV1(nn.Module):
 
         # 4. 形变key, value
         pos = pos.to(src.device)  # 确保 pos 在正确的设备上
-        value = value.to(src.device)
         if self.no_off:
             x_sampled = F.avg_pool2d(value, kernel_size=self.stride, stride=self.stride)
             assert x_sampled.size(2) == Hk and x_sampled.size(3) == Wk, f"Size is {x_sampled.size()}"
@@ -551,13 +550,13 @@ class DAttentionBaselineV1(nn.Module):
                 attn = attn + einops.rearrange(attn_bias, 'b m n h -> (b h) m n', h=self.group_heads)
             else:
                 rpe_table = self.rpe_table
-                rpe_bias = rpe_table[None, ...].expand(B, -1, -1, -1)
+                rpe_bias = rpe_table[None, ...].expand(B, -1, -1, -1).to(src.device)
                 q_grid = self._get_q_grid(H, W, B, dtype, device)
                 displacement = (
                             q_grid.reshape(B * self.num_groups, H * W, 2).unsqueeze(2) - pos.reshape(B * self.num_groups,
                                                                                                    n_sample,
                                                                                                    2).unsqueeze(1)).mul(
-                    0.5)
+                    0.5).to(src.device)
                 attn_bias = F.grid_sample(
                     input=einops.rearrange(rpe_bias, 'b (g c) h w -> (b g) c h w', c=self.group_heads,
                                            g=self.num_groups),
