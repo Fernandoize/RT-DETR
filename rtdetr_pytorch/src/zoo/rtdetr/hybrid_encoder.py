@@ -258,7 +258,7 @@ class CrossAttentionEncoderLayer(nn.Module):
 
         # Self attention
         if self.deformable_encoder:
-            self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=num_levels, num_points=num_points)
+            self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=1, num_points=num_points)
         else:
             self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
             # self.self_attn = LocalAttention(d_model, nhead)
@@ -658,9 +658,9 @@ class HybridEncoder(nn.Module):
         assert len(feats) == len(self.in_channels)
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
         if self.use_global_attention:
-            attention_out = self.forward_global_attention(proj_feats)
+            proj_feats = self.forward_global_attention(proj_feats)
         else:
-            attention_out = self.forward_cross_attention(proj_feats)
+            proj_feats = self.forward_cross_attention(proj_feats)
 
         if self.use_fpn:
         # broadcasting and fusion
@@ -674,27 +674,15 @@ class HybridEncoder(nn.Module):
                 inner_out = self.fpn_blocks[len(self.in_channels)-1-idx](torch.concat([upsample_feat, feat_low], dim=1))
                 inner_outs.insert(0, inner_out)
 
-            fpn_out = [inner_outs[0]]
+            outs = [inner_outs[0]]
             for idx in range(len(self.in_channels) - 1):
-                feat_low = fpn_out[-1]
+                feat_low = outs[-1]
                 feat_high = inner_outs[idx + 1]
                 downsample_feat = self.downsample_convs[idx](feat_low)
                 out = self.pan_blocks[idx](torch.concat([downsample_feat, feat_high], dim=1))
-                fpn_out.append(out)
-
-            # 使用门控机制融合 FPN 和 attention 特征
-            out = []
-            for fpn, attention in zip(fpn_out, attention_out):
-                # 在通道维度上拼接特征
-                concat_feat = torch.cat([fpn, attention], dim=1)
-                # 生成门控权重
-                gate = self.gate_conv(concat_feat)
-                # 使用门控权重融合特征
-                fused = gate * fpn + (1 - gate) * attention
-                out.append(fused)
-            return out
-        # 将 attention_out 和 fpn_out 转换为张量并相加
-        return attention_out
+                outs.append(out)
+            return outs
+        return proj_feats
 
 
 class LocalAttention(nn.Module):
