@@ -260,8 +260,8 @@ class CrossAttentionEncoderLayer(nn.Module):
         if self.deformable_encoder:
             self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=num_levels, num_points=num_points)
         else:
-            # self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
-            self.self_attn = LocalAttention(d_model, nhead)
+            self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
+            # self.self_attn = LocalAttention(d_model, nhead)
 
         # Cross attention between different feature levels
         if self.use_cross_attention:
@@ -293,15 +293,15 @@ class CrossAttentionEncoderLayer(nn.Module):
         if self.normalize_before:
             src = self.norm1(src)
 
-        # q = k = self.with_pos_embed(src, pos_embed)
-        # if self.deformable_encoder:
-        #     src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
-        # else:
-        #     src2 = self.self_attn(q, pos_embed=None, spatial_shapes=spatial_shapes)
-        #     # src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
-        # src = residual + self.dropout1(src2)
-        # if not self.normalize_before:
-        #     src = self.norm1(src)
+        q = k = self.with_pos_embed(src, pos_embed)
+        if self.deformable_encoder:
+            src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
+        else:
+            # src2 = self.self_attn(q, pos_embed=None, spatial_shapes=spatial_shapes)
+            src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
+        src = residual + self.dropout1(src2)
+        if not self.normalize_before:
+            src = self.norm1(src)
 
         # Cross attention with other feature levels
         if self.use_cross_attention:
@@ -478,6 +478,14 @@ class HybridEncoder(nn.Module):
                     nn.BatchNorm2d(hidden_dim)
                 )
             )
+        # 添加门控卷积层
+        self.gate_conv = nn.Sequential(
+            nn.Conv2d(self.hidden_dim * 2, self.hidden_dim, kernel_size=1),
+            nn.BatchNorm2d(self.hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(self.hidden_dim, self.hidden_dim, kernel_size=1),
+            nn.Sigmoid()
+        )
         self.encoder = nn.ModuleList([])
         for i in range(len(use_encoder_idx)):
             encoder_layer = CrossAttentionEncoderLayer(
@@ -493,7 +501,7 @@ class HybridEncoder(nn.Module):
             )
             self.encoder.append(CrossAttentionEncoder(
                 encoder_layer,
-                num_encoder_layers * (len(use_encoder_idx)-i),
+                num_encoder_layers,
                 deformable_encoder=deformable_encoder,
                 use_cross_attention=self.use_cross_attention
             ))
@@ -674,9 +682,16 @@ class HybridEncoder(nn.Module):
                 out = self.pan_blocks[idx](torch.concat([downsample_feat, feat_high], dim=1))
                 fpn_out.append(out)
 
+            # 使用门控机制融合 FPN 和 attention 特征
             out = []
             for fpn, attention in zip(fpn_out, attention_out):
-                out.append(fpn + attention)
+                # 在通道维度上拼接特征
+                concat_feat = torch.cat([fpn, attention], dim=1)
+                # 生成门控权重
+                gate = self.gate_conv(concat_feat)
+                # 使用门控权重融合特征
+                fused = gate * fpn + (1 - gate) * attention
+                out.append(fused)
             return out
         # 将 attention_out 和 fpn_out 转换为张量并相加
         return attention_out
