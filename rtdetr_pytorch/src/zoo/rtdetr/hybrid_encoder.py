@@ -643,7 +643,7 @@ class HybridEncoder(nn.Module):
             lvl_pos = self.level_embed[lvl].view(1, 1, -1)  # [1, 1, C]
             pos_embed = pos_embed + lvl_pos
 
-            output = self.encoder[lvl](
+            output = self.encoder(
                 src_flatten,
                 pos_embed=pos_embed,
                 spatial_shapes=spatial_shapes,
