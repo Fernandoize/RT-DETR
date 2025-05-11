@@ -131,20 +131,21 @@ class HungarianMatcher(nn.Module):
 
         # 5. 支持将查询分为多个组进行匹配, 每个组求最优解，相当于每个target对应多个最佳的query, 但只是局部最佳
         sizes = [len(v["boxes"]) for v in targets]
-        indices = []
-        g_num_queries = num_queries // self.group_detr
-        C_list = C.split(g_num_queries, dim=1)
-        for g_i in range(self.group_detr):
-            C_g = C_list[g_i]
-            indices_g = [linear_sum_assignment(c[i]) for i, c in enumerate(C_g.split(sizes, -1))]
-            if g_i == 0:
-                indices = indices_g
-            else:
-                indices = [
-                    # 这里的行坐标需要加上g_i * g_num_queries，因为每个组内的匹配结果需要加上该组内的query的索引
-                    (np.concatenate([indice1[0], indice2[0] + g_num_queries * g_i]), np.concatenate([indice1[1], indice2[1]]))
-                    for indice1, indice2 in zip(indices, indices_g)
-                ]
-        # 每个group取M个query, 10个group则是M * 10
-        return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+        # indices = []
+        # g_num_queries = num_queries // self.group_detr
+        # C_list = C.split(g_num_queries, dim=1)
+        # for g_i in range(self.group_detr):
+        #     C_g = C_list[g_i]
+        #     indices_g = [linear_sum_assignment(c[i]) for i, c in enumerate(C_g.split(sizes, -1))]
+        #     if g_i == 0:
+        #         indices = indices_g
+        #     else:
+        #         indices = [
+        #             # 这里的行坐标需要加上g_i * g_num_queries，因为每个组内的匹配结果需要加上该组内的query的索引
+        #             (np.concatenate([indice1[0], indice2[0] + g_num_queries * g_i]), np.concatenate([indice1[1], indice2[1]]))
+        #             for indice1, indice2 in zip(indices, indices_g)
+        #         ]
+        # # 每个group取M个query, 10个group则是M * 10
         # return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+        indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+        return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]

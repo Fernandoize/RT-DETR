@@ -9,4 +9,4 @@ wandb_id: "20006"
 
 HybridEncoder:
   use_fpn: True
-  use_cross_attention: True
+  use_cross_attention: False

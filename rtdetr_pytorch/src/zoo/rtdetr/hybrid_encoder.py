@@ -478,14 +478,6 @@ class HybridEncoder(nn.Module):
                     nn.BatchNorm2d(hidden_dim)
                 )
             )
-        # 添加门控卷积层
-        self.gate_conv = nn.Sequential(
-            nn.Conv2d(self.hidden_dim * 2, self.hidden_dim, kernel_size=1),
-            nn.BatchNorm2d(self.hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(self.hidden_dim, self.hidden_dim, kernel_size=1),
-            nn.Sigmoid()
-        )
         self.encoder = nn.ModuleList([])
         for i in range(len(use_encoder_idx)):
             encoder_layer = CrossAttentionEncoderLayer(
@@ -531,9 +523,6 @@ class HybridEncoder(nn.Module):
                     CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
                 )
         self._reset_parameters()
-
-        self.level_embed = nn.Parameter(torch.Tensor(len(in_channels), hidden_dim))
-        nn.init.normal_(self.level_embed)  # 初始化
 
     def _reset_parameters(self):
         if self.eval_spatial_size:
@@ -640,8 +629,6 @@ class HybridEncoder(nn.Module):
                     w, h, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
             else:
                 pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src_flatten.device)
-            lvl_pos = self.level_embed[lvl].view(1, 1, -1)  # [1, 1, C]
-            pos_embed = pos_embed + lvl_pos
 
             output = self.encoder[lvl](
                 src_flatten,

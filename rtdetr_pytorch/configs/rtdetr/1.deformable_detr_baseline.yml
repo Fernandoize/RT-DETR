@@ -81,11 +81,11 @@ HybridEncoder:
   in_channels: [128, 256, 512]
   hidden_dim: 256
   expansion: 0.5
-  deformable_encoder: False
+  deformable_encoder: True
   use_cross_attention: False
   use_global_attention: False
   use_fpn: False
-  use_encoder_idx: [1, 2]
+  use_encoder_idx: [2]
 
 RTDETRTransformer:
   eval_idx: -1
