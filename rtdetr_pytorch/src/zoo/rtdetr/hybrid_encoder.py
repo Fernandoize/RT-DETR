@@ -478,25 +478,25 @@ class HybridEncoder(nn.Module):
                     nn.BatchNorm2d(hidden_dim)
                 )
             )
-        #     self.encoder = nn.ModuleList([])
-        #     for _ in range(len(use_encoder_idx)):
-        encoder_layer = CrossAttentionEncoderLayer(
-            hidden_dim,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=enc_act,
-            deformable_encoder=deformable_encoder,
-            num_levels=len(self.in_channels),
-            num_points=num_cross_attention_points,
-            use_cross_attention=self.use_cross_attention,
-        )
-        self.encoder = CrossAttentionEncoder(
-            encoder_layer,
-            num_encoder_layers,
-            deformable_encoder=deformable_encoder,
-            use_cross_attention=self.use_cross_attention
-        )
+        self.encoder = nn.ModuleList([])
+        for i in range(len(use_encoder_idx)):
+            encoder_layer = CrossAttentionEncoderLayer(
+                hidden_dim,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                activation=enc_act,
+                deformable_encoder=deformable_encoder,
+                num_levels=len(self.in_channels),
+                num_points=num_cross_attention_points,
+                use_cross_attention=self.use_cross_attention,
+            )
+            self.encoder.append(CrossAttentionEncoder(
+                encoder_layer,
+                num_encoder_layers * (len(use_encoder_idx)-i),
+                deformable_encoder=deformable_encoder,
+                use_cross_attention=self.use_cross_attention
+            ))
 
         if self.use_fpn:
             # top-down fpn
@@ -598,14 +598,14 @@ class HybridEncoder(nn.Module):
         # Cross attention between feature levels
         # Prepare memory for cross attention
         memory_list = []
-        # memory_spatial_shapes = []
-        # for feat in proj_feats:
-        #     h, w = feat.shape[2:]
-        #     memory_list.append(feat.flatten(2).permute(0, 2, 1))
-        #     memory_spatial_shapes.append((h, w))
-        #
-        # memory = torch.cat(memory_list, dim=1)
-        # memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
+        memory_spatial_shapes = []
+        for feat in proj_feats:
+            h, w = feat.shape[2:]
+            memory_list.append(feat.flatten(2).permute(0, 2, 1))
+            memory_spatial_shapes.append((h, w))
+
+        memory = torch.cat(memory_list, dim=1)
+        memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
 
         # Apply cross attention
         for lvl, enc_ind in enumerate(self.use_encoder_idx):
@@ -614,18 +614,18 @@ class HybridEncoder(nn.Module):
             src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
 
             # 对 memory_list 里的每个特征做上采样/下采样
-            aligned_feats = []
-            for feat in proj_feats:
-                if feat.shape[2:] != (h, w):
-                    # 使用最近邻或双线性插值
-                    aligned_feat = F.interpolate(feat, size=(h, w), mode='bilinear', align_corners=False)
-                else:
-                    aligned_feat = feat
-                aligned_feats.append(aligned_feat)
+            # aligned_feats = []
+            # for feat in proj_feats:
+            #     if feat.shape[2:] != (h, w):
+            #         # 使用最近邻或双线性插值
+            #         aligned_feat = F.interpolate(feat, size=(h, w), mode='bilinear', align_corners=False)
+            #     else:
+            #         aligned_feat = feat
+            #     aligned_feats.append(aligned_feat)
             # flatten 并拼接
-            memory_list = [f.flatten(2).permute(0, 2, 1) for f in aligned_feats]
-            memory = torch.cat(memory_list, dim=1)
-            memory_spatial_shapes = torch.tensor([(h, w)] * len(aligned_feats), device=memory.device)
+            # memory_list = [f.flatten(2).permute(0, 2, 1) for f in aligned_feats]
+            # memory = torch.cat(memory_list, dim=1)
+            # memory_spatial_shapes = torch.tensor([(h, w)] * len(aligned_feats), device=memory.device)
 
             if self.training or self.eval_spatial_size is None:
                 pos_embed = self.build_2d_sincos_position_embedding(
@@ -635,7 +635,7 @@ class HybridEncoder(nn.Module):
             lvl_pos = self.level_embed[lvl].view(1, 1, -1)  # [1, 1, C]
             pos_embed = pos_embed + lvl_pos
 
-            output = self.encoder(
+            output = self.encoder[lvl](
                 src_flatten,
                 pos_embed=pos_embed,
                 spatial_shapes=spatial_shapes,
@@ -650,9 +650,9 @@ class HybridEncoder(nn.Module):
         assert len(feats) == len(self.in_channels)
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
         if self.use_global_attention:
-            proj_feats = self.forward_global_attention(proj_feats)
+            attention_out = self.forward_global_attention(proj_feats)
         else:
-            proj_feats = self.forward_cross_attention(proj_feats)
+            attention_out = self.forward_cross_attention(proj_feats)
 
         if self.use_fpn:
         # broadcasting and fusion
@@ -666,15 +666,20 @@ class HybridEncoder(nn.Module):
                 inner_out = self.fpn_blocks[len(self.in_channels)-1-idx](torch.concat([upsample_feat, feat_low], dim=1))
                 inner_outs.insert(0, inner_out)
 
-            outs = [inner_outs[0]]
+            fpn_out = [inner_outs[0]]
             for idx in range(len(self.in_channels) - 1):
-                feat_low = outs[-1]
+                feat_low = fpn_out[-1]
                 feat_high = inner_outs[idx + 1]
                 downsample_feat = self.downsample_convs[idx](feat_low)
                 out = self.pan_blocks[idx](torch.concat([downsample_feat, feat_high], dim=1))
-                outs.append(out)
-            return outs
-        return proj_feats
+                fpn_out.append(out)
+
+            out = []
+            for fpn, attention in zip(fpn_out, attention_out):
+                out.append(fpn + attention)
+            return out
+        # 将 attention_out 和 fpn_out 转换为张量并相加
+        return attention_out
 
 
 class LocalAttention(nn.Module):
