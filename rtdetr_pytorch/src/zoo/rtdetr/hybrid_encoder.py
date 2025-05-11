@@ -486,25 +486,25 @@ class HybridEncoder(nn.Module):
             nn.Conv2d(self.hidden_dim, self.hidden_dim, kernel_size=1),
             nn.Sigmoid()
         )
-        # self.encoder = nn.ModuleList([])
-        # for i in range(len(use_encoder_idx)):
-        encoder_layer = CrossAttentionEncoderLayer(
-            hidden_dim,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=enc_act,
-            deformable_encoder=deformable_encoder,
-            num_levels=len(self.in_channels),
-            num_points=num_cross_attention_points,
-            use_cross_attention=self.use_cross_attention,
-        )
-        self.encoder = CrossAttentionEncoder(
-            encoder_layer,
-            num_encoder_layers,
-            deformable_encoder=deformable_encoder,
-            use_cross_attention=self.use_cross_attention
-        )
+        self.encoder = nn.ModuleList([])
+        for i in range(len(use_encoder_idx)):
+            encoder_layer = CrossAttentionEncoderLayer(
+                hidden_dim,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                activation=enc_act,
+                deformable_encoder=deformable_encoder,
+                num_levels=len(self.in_channels),
+                num_points=num_cross_attention_points,
+                use_cross_attention=self.use_cross_attention,
+            )
+            self.encoder.append(CrossAttentionEncoder(
+                encoder_layer,
+                num_encoder_layers,
+                deformable_encoder=deformable_encoder,
+                use_cross_attention=self.use_cross_attention
+            ))
 
         if self.use_fpn:
             # top-down fpn
@@ -643,7 +643,7 @@ class HybridEncoder(nn.Module):
             lvl_pos = self.level_embed[lvl].view(1, 1, -1)  # [1, 1, C]
             pos_embed = pos_embed + lvl_pos
 
-            output = self.encoder(
+            output = self.encoder[lvl](
                 src_flatten,
                 pos_embed=pos_embed,
                 spatial_shapes=spatial_shapes,
