@@ -478,9 +478,9 @@ class HybridEncoder(nn.Module):
                     nn.BatchNorm2d(hidden_dim)
                 )
             )
-        self.encoder = nn.ModuleList([])
-        for i in range(len(use_encoder_idx)):
-            encoder_layer = CrossAttentionEncoderLayer(
+        # self.encoder = nn.ModuleList([])
+        # for i in range(len(use_encoder_idx)):
+        encoder_layer = CrossAttentionEncoderLayer(
                 hidden_dim,
                 nhead=nhead,
                 dim_feedforward=dim_feedforward,
@@ -490,13 +490,13 @@ class HybridEncoder(nn.Module):
                 num_levels=len(self.in_channels),
                 num_points=num_cross_attention_points,
                 use_cross_attention=self.use_cross_attention,
-            )
-            self.encoder.append(CrossAttentionEncoder(
+        )
+        self.encoder = CrossAttentionEncoder(
                 encoder_layer,
                 num_encoder_layers,
                 deformable_encoder=deformable_encoder,
                 use_cross_attention=self.use_cross_attention
-            ))
+        )
 
         if self.use_fpn:
             # top-down fpn
