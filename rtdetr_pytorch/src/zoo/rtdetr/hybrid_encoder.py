@@ -488,17 +488,15 @@ class HybridEncoder(nn.Module):
             dim_feedforward=dim_feedforward,
             dropout=dropout,
             activation=enc_act,
-            deformable_encoder=False,
+            deformable_encoder=True,
             num_levels=len(self.in_channels),
             num_points=num_cross_attention_points,
             use_cross_attention=self.use_cross_attention,
-            use_local_attention=True,
-            window_size=7,
         )
         self.encoder.append(CrossAttentionEncoder(
             encoder_layer0,
-            num_encoder_layers,
-            deformable_encoder=False,
+            num_encoder_layers * 3,
+            deformable_encoder=True,
             use_cross_attention=self.use_cross_attention
         ))
         encoder_layer1 = CrossAttentionEncoderLayer(
@@ -526,7 +524,7 @@ class HybridEncoder(nn.Module):
             dim_feedforward=dim_feedforward,
             dropout=dropout,
             activation=enc_act,
-            deformable_encoder=True,
+            deformable_encoder=False,
             num_levels=len(self.in_channels),
             num_points=num_cross_attention_points,
             use_cross_attention=self.use_cross_attention,
@@ -534,7 +532,7 @@ class HybridEncoder(nn.Module):
         self.encoder.append(CrossAttentionEncoder(
             encoder_layer2,
             num_encoder_layers,
-            deformable_encoder=True,
+            deformable_encoder=False,
             use_cross_attention=self.use_cross_attention
         ))
 
@@ -657,7 +655,7 @@ class HybridEncoder(nn.Module):
             else:
                 pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src_flatten.device)
 
-            output = self.encoder(
+            output = self.encoder[lvl](
                 src_flatten,
                 pos_embed=pos_embed,
                 spatial_shapes=spatial_shapes,
