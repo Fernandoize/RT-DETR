@@ -487,7 +487,7 @@ class HybridEncoder(nn.Module):
                 dropout=dropout,
                 activation=enc_act,
                 deformable_encoder=deformable_encoder,
-                num_levels=len(self.in_channels)-1,
+                num_levels=len(self.in_channels),
                 num_points=num_cross_attention_points,
                 use_cross_attention=self.use_cross_attention,
             )
