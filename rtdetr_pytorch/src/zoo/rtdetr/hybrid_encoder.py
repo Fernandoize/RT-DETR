@@ -497,6 +497,11 @@ class HybridEncoder(nn.Module):
                 deformable_encoder=deformable_encoder,
                 use_cross_attention=self.use_cross_attention
         )
+        self.downsample_convs = nn.ModuleList()
+        for _ in range(len(in_channels) - 1):
+            self.downsample_convs.append(
+                ConvNormLayer(hidden_dim, hidden_dim, 3, 2, act=act)
+            )
 
         if self.use_fpn:
             # top-down fpn
@@ -516,9 +521,6 @@ class HybridEncoder(nn.Module):
             self.downsample_convs = nn.ModuleList()
             self.pan_blocks = nn.ModuleList()
             for _ in range(len(in_channels) - 1):
-                self.downsample_convs.append(
-                    ConvNormLayer(hidden_dim, hidden_dim, 3, 2, act=act)
-                )
                 self.pan_blocks.append(
                     CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
                 )
