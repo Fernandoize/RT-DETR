@@ -490,7 +490,7 @@ class HybridEncoder(nn.Module):
             activation=enc_act,
             deformable_encoder=True,
             num_levels=len(self.in_channels),
-            num_points=num_cross_attention_points,
+            num_points=num_cross_attention_points * 3,
             use_cross_attention=self.use_cross_attention,
         )
         self.encoder.append(CrossAttentionEncoder(
@@ -507,7 +507,7 @@ class HybridEncoder(nn.Module):
             activation=enc_act,
             deformable_encoder=True,
             num_levels=len(self.in_channels),
-            num_points=num_cross_attention_points,
+            num_points=num_cross_attention_points * 2,
             use_cross_attention=self.use_cross_attention,
         )
         self.encoder.append(CrossAttentionEncoder(
@@ -640,9 +640,9 @@ class HybridEncoder(nn.Module):
             memory_list = []
             memory_spatial_shapes = []
             for feat in proj_feats:
-                h, w = feat.shape[2:]
+                _h, _w = feat.shape[2:]
                 memory_list.append(feat.flatten(2).permute(0, 2, 1))
-                memory_spatial_shapes.append((h, w))
+                memory_spatial_shapes.append(( _h, _w))
 
             memory = torch.cat(memory_list, dim=1)
             memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
