@@ -297,7 +297,7 @@ class CrossAttentionEncoderLayer(nn.Module):
         if self.deformable_encoder:
             src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
         else:
-            src2 = self.self_attn(q, pos_embed=None, spatial_shapes=spatial_shapes)
+            src2 = self.self_attn(q, spatial_shapes=spatial_shapes)
             # src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
         src = residual + self.dropout1(src2)
         if not self.normalize_before:
