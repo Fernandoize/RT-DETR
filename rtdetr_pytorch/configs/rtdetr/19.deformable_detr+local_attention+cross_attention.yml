@@ -3,11 +3,13 @@ __include__: [
   './1.deformable_detr_baseline.yml',
 ]
 
+fraction: 0.05
 use_wandb: True
 wandb_name: deformable_detr+local_attention+cross_attention
-wandb_id: "20029"
+wandb_id: "20091"
 
 HybridEncoder:
   use_global_attention: False
   deformable_encoder: False
   use_cross_attention: True
+  use_encoder_idx: [ 0,1,2 ]

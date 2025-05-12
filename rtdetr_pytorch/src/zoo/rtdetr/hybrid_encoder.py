@@ -518,7 +518,6 @@ class HybridEncoder(nn.Module):
 
             # bottom-up pan
             # 从低层级到高层级，通过下采样和特征融合进一步优化金字塔特征
-            self.downsample_convs = nn.ModuleList()
             self.pan_blocks = nn.ModuleList()
             for _ in range(len(in_channels) - 1):
                 self.pan_blocks.append(
@@ -597,36 +596,20 @@ class HybridEncoder(nn.Module):
         # Cross attention between feature levels
         # Prepare memory for cross attention
         memory_list = []
-        # memory_spatial_shapes = []
-        # for feat in proj_feats:
-        #     h, w = feat.shape[2:]
-        #     memory_list.append(feat.flatten(2).permute(0, 2, 1))
-        #     memory_spatial_shapes.append((h, w))
+        memory_spatial_shapes = []
+        for feat in proj_feats:
+            h, w = feat.shape[2:]
+            memory_list.append(feat.flatten(2).permute(0, 2, 1))
+            memory_spatial_shapes.append((h, w))
 
-        # memory = torch.cat(memory_list, dim=1)
-        # memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
+        memory = torch.cat(memory_list, dim=1)
+        memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
 
         # Apply cross attention
         for lvl, enc_ind in enumerate(self.use_encoder_idx):
             h, w = proj_feats[enc_ind].shape[2:]
             spatial_shapes = [(h, w)]
             src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
-
-            # 对 memory_list 里的每个特征做上采样/下采样
-            cross_feats = []
-            memory_spatial_shapes = []
-            for i, feat in enumerate(proj_feats):
-                _h, _w = feat.shape[2:]
-                if _h < h and _w < w:
-                # 使用最近邻或双线性插值
-                    cross_feats.append(F.interpolate(feat, size=(h, w), mode='bilinear', align_corners=False))
-                else:
-
-                    cross_feats.append(self.downsample_convs[i](feat))
-
-            memory_list = [f.flatten(2).permute(0, 2, 1) for f in cross_feats]
-            memory = torch.cat(memory_list, dim=1)
-            memory_spatial_shapes = torch.tensor([(h, w)] * len(cross_feats), device=memory.device)
 
             if self.training or self.eval_spatial_size is None:
                 pos_embed = self.build_2d_sincos_position_embedding(
