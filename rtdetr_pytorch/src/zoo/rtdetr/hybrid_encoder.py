@@ -257,11 +257,11 @@ class CrossAttentionEncoderLayer(nn.Module):
         self.use_cross_attention = use_cross_attention
 
         # Self attention
-        # if self.deformable_encoder:
-        #     self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=1, num_points=num_points)
-        # else:
-        #     # self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
-        #     self.self_attn = LocalAttention(d_model, nhead)
+        if self.deformable_encoder:
+            self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=1, num_points=num_points)
+        else:
+            # self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
+            self.self_attn = LocalAttention(d_model, nhead)
 
         # Cross attention between different feature levels
         if self.use_cross_attention:
@@ -289,19 +289,19 @@ class CrossAttentionEncoderLayer(nn.Module):
 
     def forward(self, src, src_mask=None, pos_embed=None, reference_points=None, spatial_shapes=None, memory=None, memory_spatial_shapes=None):
         # Self attention
-        # residual = src
-        # if self.normalize_before:
-        #     src = self.norm1(src)
-        #
-        # q = k = self.with_pos_embed(src, pos_embed)
-        # if self.deformable_encoder:
-        #     src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
-        # else:
-        #     src2 = self.self_attn(q, spatial_shapes=spatial_shapes)
-        #     # src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
-        # src = residual + self.dropout1(src2)
-        # if not self.normalize_before:
-        #     src = self.norm1(src)
+        residual = src
+        if self.normalize_before:
+            src = self.norm1(src)
+
+        q = k = self.with_pos_embed(src, pos_embed)
+        if self.deformable_encoder:
+            src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
+        else:
+            src2 = self.self_attn(q, spatial_shapes=spatial_shapes)
+            # src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
+        src = residual + self.dropout1(src2)
+        if not self.normalize_before:
+            src = self.norm1(src)
 
         # Cross attention with other feature levels
         if self.use_cross_attention:
