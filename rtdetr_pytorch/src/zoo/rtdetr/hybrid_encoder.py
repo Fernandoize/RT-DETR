@@ -490,7 +490,7 @@ class HybridEncoder(nn.Module):
             activation=enc_act,
             deformable_encoder=True,
             num_levels=len(self.in_channels),
-            num_points=num_cross_attention_points * 3,
+            num_points=num_cross_attention_points * 2,
             use_cross_attention=self.use_cross_attention,
         )
         self.encoder.append(CrossAttentionEncoder(
@@ -507,7 +507,7 @@ class HybridEncoder(nn.Module):
             activation=enc_act,
             deformable_encoder=True,
             num_levels=len(self.in_channels),
-            num_points=num_cross_attention_points * 2,
+            num_points=num_cross_attention_points,
             use_cross_attention=self.use_cross_attention,
         )
         self.encoder.append(CrossAttentionEncoder(
