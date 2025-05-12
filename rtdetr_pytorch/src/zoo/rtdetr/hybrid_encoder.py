@@ -621,7 +621,7 @@ class HybridEncoder(nn.Module):
                 #     aligned_feat = feat
                     cross_feats.append(feat)
                     _h, _w = feat.shape[2:]
-                    memory_spatial_shapes.append([(_h,_w)])
+                    memory_spatial_shapes.append((_h,_w))
             # flatten 并拼接
             memory_list = [f.flatten(2).permute(0, 2, 1) for f in cross_feats]
             memory = torch.cat(memory_list, dim=1)
