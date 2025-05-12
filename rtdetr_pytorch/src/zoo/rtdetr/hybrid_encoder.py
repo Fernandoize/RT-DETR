@@ -258,14 +258,14 @@ class CrossAttentionEncoderLayer(nn.Module):
 
         # Self attention
         if self.deformable_encoder:
-            self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=1, num_points=num_points)
+            self.self_attn = MSDeformableAttention(d_model, nhead, num_levels=1, num_points=num_points)
         else:
-            self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
-        #     # self.self_attn = LocalAttention(d_model, nhead)
+            # self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
+            self.self_attn = LocalAttention(d_model, nhead)
 
         # Cross attention between different feature levels
         if self.use_cross_attention:
-            self.cross_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=num_levels, num_points=num_points)
+            self.cross_attn = MSDeformableAttention(d_model, nhead, num_kv_heads=nhead, num_levels=num_levels, num_points=num_points)
 
         # Feed forward network
         self.linear1 = nn.Linear(d_model, dim_feedforward)
@@ -297,8 +297,8 @@ class CrossAttentionEncoderLayer(nn.Module):
         if self.deformable_encoder:
             src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
         else:
-            # src2 = self.self_attn(q, pos_embed=None, spatial_shapes=spatial_shapes)
-            src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
+            src2 = self.self_attn(q, pos_embed=None, spatial_shapes=spatial_shapes)
+            # src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
         src = residual + self.dropout1(src2)
         if not self.normalize_before:
             src = self.norm1(src)
@@ -614,14 +614,14 @@ class HybridEncoder(nn.Module):
             cross_feats = []
             memory_spatial_shapes = []
             for feat in proj_feats:
-                if feat.shape[2:] != (h, w):
-                #     # 使用最近邻或双线性插值
-                #     aligned_feat = F.interpolate(feat, size=(h, w), mode='bilinear', align_corners=False)
-                # else:
-                #     aligned_feat = feat
+                _h, _w = feat.shape[2:]
+                if _h < h and _w < w:
+                # 使用最近邻或双线性插值
+                    cross_feats.append(F.interpolate(feat, size=(h, w), mode='bilinear', align_corners=False))
+                    memory_spatial_shapes.append((h, w))
+                else:
                     cross_feats.append(feat)
-                    _h, _w = feat.shape[2:]
-                    memory_spatial_shapes.append((_h,_w))
+                    memory_spatial_shapes.append((_h, _w))
             # flatten 并拼接
             memory_list = [f.flatten(2).permute(0, 2, 1) for f in cross_feats]
             memory = torch.cat(memory_list, dim=1)
@@ -713,16 +713,12 @@ class LocalAttention(nn.Module):
         
         return window_size
 
-    def forward(self, x, pos_embed=None, spatial_shapes=None):
+    def forward(self, x, spatial_shapes=None):
         B, N, C = x.shape
         H, W = spatial_shapes[0] if spatial_shapes is not None else (int(N ** 0.5), int(N ** 0.5))
 
         # 动态计算window size
         window_size = self._get_window_size(H, W)
-        
-        # Add position embedding if provided
-        if pos_embed is not None:
-            x = x + pos_embed
 
         # Project queries, keys and values
         q = self.q_proj(x).view(B, N, self.nhead, C // self.nhead).transpose(1, 2)
