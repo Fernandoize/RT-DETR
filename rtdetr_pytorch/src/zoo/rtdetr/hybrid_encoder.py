@@ -493,7 +493,7 @@ class HybridEncoder(nn.Module):
             )
             self.encoder.append(CrossAttentionEncoder(
                 encoder_layer,
-                num_encoder_layers * (i + 1),
+                num_encoder_layers,
                 deformable_encoder=deformable_encoder,
                 use_cross_attention=self.use_cross_attention
             ))
