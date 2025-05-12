@@ -16,7 +16,7 @@ from src.core import register
 
 __all__ = ['HybridEncoder']
 
-from ..deformable_attention.dat_blocks import DAttentionBaselineV1
+from ..deformable_attention.dat_blocks import DAttentionBaselineV1, LayerNormProxy
 
 from ..deformable_attention.ms_deformable_attention import MSDeformableAttentionGQA
 
@@ -467,9 +467,6 @@ class HybridEncoder(nn.Module):
         self.out_strides = feat_strides
         # self.gate = BottleneckGate()
 
-        # channel projection
-        # 使用 input_proj 将每个特征图投影到统一的 hidden_dim 维度
-
         self.input_proj = nn.ModuleList()
         for in_channel in in_channels:
             self.input_proj.append(
@@ -657,7 +654,6 @@ class HybridEncoder(nn.Module):
                 outs.append(out)
             return outs
         return proj_feats
-
 
 class LocalAttention(nn.Module):
     """Local attention module that focuses on local regions around each query point."""
