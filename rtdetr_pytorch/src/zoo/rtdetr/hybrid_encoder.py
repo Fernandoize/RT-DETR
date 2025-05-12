@@ -612,6 +612,7 @@ class HybridEncoder(nn.Module):
 
             # 对 memory_list 里的每个特征做上采样/下采样
             cross_feats = []
+            memory_spatial_shapes = []
             for feat in proj_feats:
                 if feat.shape[2:] != (h, w):
                 #     # 使用最近邻或双线性插值
@@ -619,10 +620,12 @@ class HybridEncoder(nn.Module):
                 # else:
                 #     aligned_feat = feat
                     cross_feats.append(feat)
+                    _h, _w = feat.shape[2:]
+                    memory_spatial_shapes.append([(_h,_w)])
             # flatten 并拼接
             memory_list = [f.flatten(2).permute(0, 2, 1) for f in cross_feats]
             memory = torch.cat(memory_list, dim=1)
-            memory_spatial_shapes = torch.tensor([(h, w)] * len(cross_feats), device=memory.device)
+            memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
 
             if self.training or self.eval_spatial_size is None:
                 pos_embed = self.build_2d_sincos_position_embedding(
