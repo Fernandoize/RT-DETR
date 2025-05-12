@@ -251,7 +251,8 @@ class CrossAttentionEncoderLayer(nn.Module):
                  num_levels=3,
                  num_points=4,
                  use_cross_attention=False,
-                 use_local_attention=False):
+                 use_local_attention=False,
+                 window_size=3):
         super().__init__()
         self.normalize_before = normalize_before
         self.deformable_encoder = deformable_encoder
@@ -262,7 +263,7 @@ class CrossAttentionEncoderLayer(nn.Module):
         if self.deformable_encoder:
             self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=1, num_points=num_points)
         elif self.use_local_attention:
-            self.self_attn = LocalAttention(d_model, nhead)
+            self.self_attn = LocalAttention(d_model, nhead, window_size=window_size)
             # self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
         else:
             self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
@@ -491,7 +492,8 @@ class HybridEncoder(nn.Module):
             num_levels=len(self.in_channels),
             num_points=num_cross_attention_points,
             use_cross_attention=self.use_cross_attention,
-            use_local_attention=True
+            use_local_attention=True,
+            window_size=7,
         )
         self.encoder.append(CrossAttentionEncoder(
             encoder_layer0,
@@ -509,6 +511,8 @@ class HybridEncoder(nn.Module):
             num_levels=len(self.in_channels),
             num_points=num_cross_attention_points,
             use_cross_attention=self.use_cross_attention,
+            use_local_attention=True,
+            window_size=3,
         )
         self.encoder.append(CrossAttentionEncoder(
             encoder_layer1,
