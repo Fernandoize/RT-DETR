@@ -265,7 +265,7 @@ class CrossAttentionEncoderLayer(nn.Module):
 
         # Cross attention between different feature levels
         if self.use_cross_attention:
-            self.cross_attn = MSDeformableAttention(d_model, nhead, num_kv_heads=nhead, num_levels=num_levels, num_points=num_points)
+            self.cross_attn = MSDeformableAttention(d_model, nhead, num_levels=num_levels, num_points=num_points)
 
         # Feed forward network
         self.linear1 = nn.Linear(d_model, dim_feedforward)

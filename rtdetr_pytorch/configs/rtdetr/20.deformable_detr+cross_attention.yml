@@ -8,5 +8,5 @@ wandb_name: deformable_detr+cross_attention
 wandb_id: "20035"
 
 HybridEncoder:
-  deformable_encoder: True
+  deformable_encoder: False
   use_cross_attention: True
