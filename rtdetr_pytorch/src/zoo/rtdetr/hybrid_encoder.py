@@ -658,13 +658,11 @@ class HybridEncoder(nn.Module):
 class LocalAttention(nn.Module):
     """Local attention module that focuses on local regions around each query point."""
 
-    def __init__(self, d_model, nhead, base_window_size=3, min_window_size=3, max_window_size=7, dropout=0.1):
+    def __init__(self, d_model, nhead, window_size=3, dropout=0.1):
         super().__init__()
         self.d_model = d_model
         self.nhead = nhead
-        self.base_window_size = base_window_size
-        self.min_window_size = min_window_size
-        self.max_window_size = max_window_size
+        self.window_size = window_size
         self.scale = (d_model // nhead) ** -0.5
 
         self.q_proj = nn.Linear(d_model, d_model)
@@ -674,24 +672,7 @@ class LocalAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def _get_window_size(self, H, W):
-        """Dynamically calculate window size based on feature map dimensions."""
-        # 计算特征图的较小维度
-        min_dim = min(H, W)
-        
-        # 根据特征图大小动态调整window size
-        # 当特征图较小时使用较小的window size，较大时使用较大的window size
-        window_size = max(
-            self.min_window_size,
-            min(
-                self.max_window_size,
-                int(self.base_window_size * (min_dim / 32))  # 32是基准尺寸
-            )
-        )
-        
-        # 确保window size是奇数
-        window_size = window_size if window_size % 2 == 1 else window_size + 1
-        
-        return window_size
+        return self.window_size
 
     def forward(self, x, spatial_shapes=None):
         B, N, C = x.shape
