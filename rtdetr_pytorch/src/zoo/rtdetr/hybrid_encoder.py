@@ -495,7 +495,7 @@ class HybridEncoder(nn.Module):
         )
         self.encoder.append(CrossAttentionEncoder(
             encoder_layer0,
-            num_encoder_layers * 3,
+            num_encoder_layers,
             deformable_encoder=True,
             use_cross_attention=self.use_cross_attention
         ))
@@ -505,17 +505,15 @@ class HybridEncoder(nn.Module):
             dim_feedforward=dim_feedforward,
             dropout=dropout,
             activation=enc_act,
-            deformable_encoder=False,
+            deformable_encoder=True,
             num_levels=len(self.in_channels),
             num_points=num_cross_attention_points,
             use_cross_attention=self.use_cross_attention,
-            use_local_attention=True,
-            window_size=3,
         )
         self.encoder.append(CrossAttentionEncoder(
             encoder_layer1,
             num_encoder_layers,
-            deformable_encoder=False,
+            deformable_encoder=True,
             use_cross_attention=self.use_cross_attention
         ))
         encoder_layer2 = CrossAttentionEncoderLayer(
@@ -524,7 +522,7 @@ class HybridEncoder(nn.Module):
             dim_feedforward=dim_feedforward,
             dropout=dropout,
             activation=enc_act,
-            deformable_encoder=False,
+            deformable_encoder=True,
             num_levels=len(self.in_channels),
             num_points=num_cross_attention_points,
             use_cross_attention=self.use_cross_attention,
@@ -532,7 +530,7 @@ class HybridEncoder(nn.Module):
         self.encoder.append(CrossAttentionEncoder(
             encoder_layer2,
             num_encoder_layers,
-            deformable_encoder=False,
+            deformable_encoder=True,
             use_cross_attention=self.use_cross_attention
         ))
 
@@ -633,21 +631,21 @@ class HybridEncoder(nn.Module):
     def forward_cross_attention(self, proj_feats):
         # Cross attention between feature levels
         # Prepare memory for cross attention
-        memory_list = []
-        memory_spatial_shapes = []
-        for feat in proj_feats:
-            h, w = feat.shape[2:]
-            memory_list.append(feat.flatten(2).permute(0, 2, 1))
-            memory_spatial_shapes.append((h, w))
-
-        memory = torch.cat(memory_list, dim=1)
-        memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
-
         # Apply cross attention
         for lvl, enc_ind in enumerate(self.use_encoder_idx):
             h, w = proj_feats[enc_ind].shape[2:]
             spatial_shapes = [(h, w)]
             src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
+
+            memory_list = []
+            memory_spatial_shapes = []
+            for feat in proj_feats:
+                h, w = feat.shape[2:]
+                memory_list.append(feat.flatten(2).permute(0, 2, 1))
+                memory_spatial_shapes.append((h, w))
+
+            memory = torch.cat(memory_list, dim=1)
+            memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
 
             if self.training or self.eval_spatial_size is None:
                 pos_embed = self.build_2d_sincos_position_embedding(
