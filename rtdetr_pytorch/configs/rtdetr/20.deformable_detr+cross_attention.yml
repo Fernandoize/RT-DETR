@@ -5,7 +5,8 @@ __include__: [
 
 use_wandb: True
 wandb_name: deformable_detr+cross_attention
-wandb_id: "20035"
+wandb_id: "20071"
+fraction: 0.1
 
 HybridEncoder:
   deformable_encoder: False
