@@ -1,0 +1,16 @@
+
+__include__: [
+  './1.deformable_detr_baseline.yml',
+]
+
+use_wandb: True
+wandb_name: deformable_detr+topk_query_100
+wandb_id: "20100"
+
+HybridEncoder:
+  deformable_encoder: True
+  use_cross_attention: True
+  use_fpn: True
+
+RTDETRTransformer:
+  num_queries: 100

@@ -1,0 +1,11 @@
+
+__include__: [
+  './10.deformable_detr+topk_query_100.yml',
+]
+
+use_wandb: True
+wandb_name: deformable_detr+topk_query_300
+wandb_id: "20300"
+
+RTDETRTransformer:
+  num_queries: 300
