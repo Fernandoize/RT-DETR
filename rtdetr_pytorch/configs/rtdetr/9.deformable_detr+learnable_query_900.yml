@@ -5,7 +5,7 @@ __include__: [
 
 use_wandb: True
 wandb_name: deformable_detr+learnable_query_900
-wandb_id: "20310"
+wandb_id: "20910"
 
 HybridEncoder:
   deformable_encoder: True
