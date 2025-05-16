@@ -260,13 +260,13 @@ class CrossAttentionEncoderLayer(nn.Module):
         self.use_local_attention = use_local_attention
 
         # Self attention
-        if self.deformable_encoder:
-            self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=1, num_points=num_points)
-        elif self.use_local_attention:
-            self.self_attn = LocalAttention(d_model, nhead, window_size=window_size)
-            # self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
-        else:
-            self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
+        # if self.deformable_encoder:
+        #     self.self_attn = MSDeformableAttentionGQA(d_model, nhead, num_kv_heads=nhead, num_levels=1, num_points=num_points)
+        # elif self.use_local_attention:
+        #     self.self_attn = LocalAttention(d_model, nhead, window_size=window_size)
+        #     self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
+        # else:
+        #     self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
 
         # Cross attention between different feature levels
         if self.use_cross_attention:
@@ -294,20 +294,20 @@ class CrossAttentionEncoderLayer(nn.Module):
 
     def forward(self, src, src_mask=None, pos_embed=None, reference_points=None, spatial_shapes=None, memory=None, memory_spatial_shapes=None):
         # Self attention
-        residual = src
-        if self.normalize_before:
-            src = self.norm1(src)
-
-        q = k = self.with_pos_embed(src, pos_embed)
-        if self.deformable_encoder:
-            src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
-        elif self.use_local_attention:
-            src2 = self.self_attn(q, spatial_shapes=spatial_shapes)
-        else:
-            src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
-        src = residual + self.dropout1(src2)
-        if not self.normalize_before:
-            src = self.norm1(src)
+        # residual = src
+        # if self.normalize_before:
+        #     src = self.norm1(src)
+        #
+        # q = k = self.with_pos_embed(src, pos_embed)
+        # if self.deformable_encoder:
+        #     src2, _ = self.self_attn(q, reference_points, value=src, value_spatial_shapes=spatial_shapes, value_mask=src_mask)
+        # elif self.use_local_attention:
+        #     src2 = self.self_attn(q, spatial_shapes=spatial_shapes)
+        # else:
+        #     src2, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
+        # src = residual + self.dropout1(src2)
+        # if not self.normalize_before:
+        #     src = self.norm1(src)
 
         # Cross attention with other feature levels
         if self.use_cross_attention:
@@ -481,58 +481,58 @@ class HybridEncoder(nn.Module):
                     nn.BatchNorm2d(hidden_dim)
                 )
             )
-        self.encoder = nn.ModuleList([])
+        # self.encoder = nn.ModuleList([])
         encoder_layer0 = CrossAttentionEncoderLayer(
             hidden_dim,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
             activation=enc_act,
-            deformable_encoder=True,
+            deformable_encoder=False,
             num_levels=len(self.in_channels),
-            num_points=num_cross_attention_points * 2,
+            num_points=num_cross_attention_points,
             use_cross_attention=self.use_cross_attention,
         )
-        self.encoder.append(CrossAttentionEncoder(
+        self.encoder = CrossAttentionEncoder(
             encoder_layer0,
             num_encoder_layers,
-            deformable_encoder=True,
+            deformable_encoder=False,
             use_cross_attention=self.use_cross_attention
-        ))
-        encoder_layer1 = CrossAttentionEncoderLayer(
-            hidden_dim,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=enc_act,
-            deformable_encoder=True,
-            num_levels=len(self.in_channels),
-            num_points=num_cross_attention_points,
-            use_cross_attention=self.use_cross_attention,
         )
-        self.encoder.append(CrossAttentionEncoder(
-            encoder_layer1,
-            num_encoder_layers,
-            deformable_encoder=True,
-            use_cross_attention=self.use_cross_attention
-        ))
-        encoder_layer2 = CrossAttentionEncoderLayer(
-            hidden_dim,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=enc_act,
-            deformable_encoder=True,
-            num_levels=len(self.in_channels),
-            num_points=num_cross_attention_points,
-            use_cross_attention=self.use_cross_attention,
-        )
-        self.encoder.append(CrossAttentionEncoder(
-            encoder_layer2,
-            num_encoder_layers,
-            deformable_encoder=True,
-            use_cross_attention=self.use_cross_attention
-        ))
+        # encoder_layer1 = CrossAttentionEncoderLayer(
+        #     hidden_dim,
+        #     nhead=nhead,
+        #     dim_feedforward=dim_feedforward,
+        #     dropout=dropout,
+        #     activation=enc_act,
+        #     deformable_encoder=True,
+        #     num_levels=len(self.in_channels),
+        #     num_points=num_cross_attention_points,
+        #     use_cross_attention=self.use_cross_attention,
+        # )
+        # self.encoder.append(CrossAttentionEncoder(
+        #     encoder_layer1,
+        #     num_encoder_layers,
+        #     deformable_encoder=True,
+        #     use_cross_attention=self.use_cross_attention
+        # ))
+        # encoder_layer2 = CrossAttentionEncoderLayer(
+        #     hidden_dim,
+        #     nhead=nhead,
+        #     dim_feedforward=dim_feedforward,
+        #     dropout=dropout,
+        #     activation=enc_act,
+        #     deformable_encoder=True,
+        #     num_levels=len(self.in_channels),
+        #     num_points=num_cross_attention_points,
+        #     use_cross_attention=self.use_cross_attention,
+        # )
+        # self.encoder.append(CrossAttentionEncoder(
+        #     encoder_layer2,
+        #     num_encoder_layers,
+        #     deformable_encoder=True,
+        #     use_cross_attention=self.use_cross_attention
+        # ))
 
 
         if self.use_fpn:
@@ -560,6 +560,51 @@ class HybridEncoder(nn.Module):
                     CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
                 )
         self._reset_parameters()
+
+        # 添加上采样和下采样卷积层
+        self.upsample_convs = nn.ModuleList()
+        self.downsample_convs = nn.ModuleList()
+        
+        # 为每个可能的尺度差创建上采样和下采样卷积
+        max_scale_diff = len(in_channels) - 1
+        for i in range(max_scale_diff):
+            # 上采样卷积 (使用转置卷积)
+            self.upsample_convs.append(
+                nn.Sequential(
+                    nn.ConvTranspose2d(
+                        hidden_dim, 
+                        hidden_dim,
+                        kernel_size=4,
+                        stride=2,
+                        padding=1,
+                        bias=False
+                    ),
+                    nn.BatchNorm2d(hidden_dim),
+                    nn.ReLU(inplace=True)
+                )
+            )
+            
+            # 下采样卷积
+            self.downsample_convs.append(
+                nn.Sequential(
+                    nn.Conv2d(
+                        hidden_dim,
+                        hidden_dim,
+                        kernel_size=3,
+                        stride=2,
+                        padding=1,
+                        bias=False
+                    ),
+                    nn.BatchNorm2d(hidden_dim),
+                    nn.ReLU(inplace=True)
+                )
+            )
+
+        # 添加level embedding
+        self.level_embed = nn.Parameter(torch.zeros(len(in_channels), hidden_dim))
+        
+        # 初始化level embedding
+        nn.init.normal_(self.level_embed, std=0.02)
 
     def _reset_parameters(self):
         if self.eval_spatial_size:
@@ -629,37 +674,70 @@ class HybridEncoder(nn.Module):
         return outs
 
     def forward_cross_attention(self, proj_feats):
-        # Cross attention between feature levels
-        # Prepare memory for cross attention
-        # Apply cross attention
         for lvl, enc_ind in enumerate(self.use_encoder_idx):
             h, w = proj_feats[enc_ind].shape[2:]
             spatial_shapes = [(h, w)]
             src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
 
+            # 准备对齐后的特征
+            aligned_feats = []
+            aligned_spatial_shapes = []
+            
+            for i, feat in enumerate(proj_feats):
+                if i == enc_ind:
+                    # 当前层保持不变
+                    aligned_feat = feat
+                elif i > enc_ind:
+                    # 高层特征需要上采样到当前层
+                    scale_diff = i - enc_ind
+                    aligned_feat = feat
+                    # 多次上采样
+                    for _ in range(scale_diff):
+                        aligned_feat = self.upsample_convs[0](aligned_feat)
+                else:
+                    # 低层特征需要下采样到当前层
+                    scale_diff = enc_ind - i
+                    aligned_feat = feat
+                    # 多次下采样
+                    for _ in range(scale_diff):
+                        aligned_feat = self.downsample_convs[0](aligned_feat)
+                
+                # 确保特征通道数正确
+                if aligned_feat.shape[1] != self.hidden_dim:
+                    aligned_feat = self.input_proj[i](aligned_feat)
+                
+                aligned_feats.append(aligned_feat)
+                aligned_spatial_shapes.append((aligned_feat.shape[2], aligned_feat.shape[3]))
+
+            # 将所有对齐后的特征展平并拼接
             memory_list = []
-            memory_spatial_shapes = []
-            for feat in proj_feats:
-                _h, _w = feat.shape[2:]
+            for feat in aligned_feats:
                 memory_list.append(feat.flatten(2).permute(0, 2, 1))
-                memory_spatial_shapes.append(( _h, _w))
-
+            
             memory = torch.cat(memory_list, dim=1)
-            memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)
+            memory_spatial_shapes = torch.tensor(aligned_spatial_shapes, device=memory.device)
 
+            # 位置编码
             if self.training or self.eval_spatial_size is None:
                 pos_embed = self.build_2d_sincos_position_embedding(
                     w, h, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
             else:
                 pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src_flatten.device)
 
-            output = self.encoder[lvl](
+            # 添加level embedding
+            lvl_pos = self.level_embed[lvl].view(1, 1, -1)
+            pos_embed = pos_embed + lvl_pos
+
+            # 应用交叉注意力
+            output = self.encoder(
                 src_flatten,
                 pos_embed=pos_embed,
                 spatial_shapes=spatial_shapes,
                 memory=memory,
                 memory_spatial_shapes=memory_spatial_shapes
             )
+
+            # 重塑输出
             proj_feats[enc_ind] = output.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()
 
         return proj_feats
