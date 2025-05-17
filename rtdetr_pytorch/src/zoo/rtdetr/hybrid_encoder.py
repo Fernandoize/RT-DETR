@@ -7,14 +7,15 @@ import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import Conv2d
 
 from .rtdetr_decoder import BottleneckGate, MSDeformableAttention
-from .utils import get_activation
-
 from src.core import register
 
 
 __all__ = ['HybridEncoder']
+
+from .utils import get_activation
 
 from ..deformable_attention.dat_blocks import DAttentionBaselineV1, LayerNormProxy
 
@@ -415,6 +416,21 @@ class CrossAttentionEncoder(nn.Module):
         return output
 
 
+class FeatureSelectionModule(nn.Module):
+    def __init__(self, in_chan, out_chan, norm="GN"):
+        super(FeatureSelectionModule, self).__init__()
+        self.conv_atten = Conv2d(in_chan, in_chan, kernel_size=1, bias=False)
+        self.sigmoid = nn.Sigmoid()
+        self.conv = Conv2d(in_chan, out_chan, kernel_size=1, bias=False)
+
+    def forward(self, x):
+        atten = self.sigmoid(self.conv_atten(F.avg_pool2d(x, x.size()[2:])))
+        feat = torch.mul(x, atten)
+        x = x + feat
+        feat = self.conv(x)
+        return feat
+
+
 @register
 class HybridEncoder(nn.Module):
     def __init__(self,
@@ -559,7 +575,6 @@ class HybridEncoder(nn.Module):
                 self.pan_blocks.append(
                     CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
                 )
-        self._reset_parameters()
 
         # 添加上采样和下采样卷积层
         self.upsample_convs = nn.ModuleList()
@@ -606,6 +621,19 @@ class HybridEncoder(nn.Module):
         # 初始化level embedding
         nn.init.normal_(self.level_embed, std=0.02)
 
+        # 添加特征选择模块
+        self.upsample_selection = nn.ModuleList()
+        self.downsample_selection = nn.ModuleList()
+        
+        for _ in range(max_scale_diff):
+            self.upsample_selection.append(
+                FeatureSelectionModule(hidden_dim, hidden_dim)
+            )
+            self.downsample_selection.append(
+                FeatureSelectionModule(hidden_dim, hidden_dim)
+            )
+        self._reset_parameters()
+
     def _reset_parameters(self):
         if self.eval_spatial_size:
             for idx in self.use_encoder_idx:
@@ -614,7 +642,37 @@ class HybridEncoder(nn.Module):
                     self.eval_spatial_size[1] // stride, self.eval_spatial_size[0] // stride,
                     self.hidden_dim, self.pe_temperature)
                 setattr(self, f'pos_embed{idx}', pos_embed)
-                # self.register_buffer(f'pos_embed{idx}', pos_embed)
+
+        # 初始化上采样卷积层权重
+        for i, upsample_conv in enumerate(self.upsample_convs):
+            # 初始化转置卷积权重
+            nn.init.kaiming_normal_(upsample_conv[0].weight, mode='fan_out', nonlinearity='relu')
+            # 初始化BatchNorm层
+            if isinstance(upsample_conv[1], nn.BatchNorm2d):
+                nn.init.constant_(upsample_conv[1].weight, 1)
+                nn.init.constant_(upsample_conv[1].bias, 0)
+
+        # 初始化下采样卷积层权重
+        for i, downsample_conv in enumerate(self.downsample_convs):
+            # 初始化卷积权重
+            nn.init.kaiming_normal_(downsample_conv[0].weight, mode='fan_out', nonlinearity='relu')
+            # 初始化BatchNorm层
+            if isinstance(downsample_conv[1], nn.BatchNorm2d):
+                nn.init.constant_(downsample_conv[1].weight, 1)
+                nn.init.constant_(downsample_conv[1].bias, 0)
+
+        # 初始化特征选择模块权重
+        for i, selection in enumerate(self.upsample_selection):
+            # 初始化注意力卷积层
+            nn.init.kaiming_normal_(selection.conv_atten.weight, mode='fan_out', nonlinearity='relu')
+            # 初始化输出卷积层
+            nn.init.kaiming_normal_(selection.conv.weight, mode='fan_out', nonlinearity='relu')
+
+        for i, selection in enumerate(self.downsample_selection):
+            # 初始化注意力卷积层
+            nn.init.kaiming_normal_(selection.conv_atten.weight, mode='fan_out', nonlinearity='relu')
+            # 初始化输出卷积层
+            nn.init.kaiming_normal_(selection.conv.weight, mode='fan_out', nonlinearity='relu')
 
     @staticmethod
     def build_2d_sincos_position_embedding(w, h, embed_dim=256, temperature=10000.):
@@ -692,15 +750,26 @@ class HybridEncoder(nn.Module):
                     scale_diff = i - enc_ind
                     aligned_feat = feat
                     # 多次上采样
-                    for _ in range(scale_diff):
-                        aligned_feat = self.upsample_convs[0](aligned_feat)
+                    for j in range(scale_diff):
+                        # 先应用特征选择模块
+                        aligned_feat = self.upsample_selection[j](aligned_feat)
+                        # 再使用双线性插值上采样
+                        aligned_feat = F.interpolate(
+                            aligned_feat, 
+                            size=(aligned_feat.shape[2]*2, aligned_feat.shape[3]*2),
+                            mode='bilinear', 
+                            align_corners=False
+                        )
                 else:
                     # 低层特征需要下采样到当前层
                     scale_diff = enc_ind - i
                     aligned_feat = feat
                     # 多次下采样
-                    for _ in range(scale_diff):
-                        aligned_feat = self.downsample_convs[0](aligned_feat)
+                    for j in range(scale_diff):
+                        # 先应用特征选择模块
+                        aligned_feat = self.downsample_selection[j](aligned_feat)
+                        # 再使用卷积下采样
+                        aligned_feat = self.downsample_convs[j](aligned_feat)
                 
                 # 确保特征通道数正确
                 if aligned_feat.shape[1] != self.hidden_dim:
