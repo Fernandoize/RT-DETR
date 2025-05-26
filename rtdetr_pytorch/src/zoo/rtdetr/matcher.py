@@ -135,7 +135,7 @@ class HungarianMatcher(nn.Module):
                     tgt_indices.extend(col_ind)
 
                     # 将已匹配的位置设为无穷大
-                    c[i][row_ind, col_ind] = 1e8
+                    c[i][row_ind, :] = 1e8
 
                 indices.append((torch.tensor(src_indices, dtype=torch.int64), 
                               torch.tensor(tgt_indices, dtype=torch.int64)))
