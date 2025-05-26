@@ -120,44 +120,44 @@ class HungarianMatcher(nn.Module):
         # 对每个图像分别进行匹配
         if self.training and self.o2m > 0:
             indices = []
+            weights = []
             for i, c in enumerate(C.split(sizes, -1)):
                 c_i = c[i].clone()
                 all_src_indices = []
                 all_tgt_indices = []
+                all_weights = []  # 存储每轮匹配的权重
 
                 for round_idx in range(self.o2m):
-                    # 为后续轮次增加噪声，鼓励多样性
-                    if round_idx > 0:
-                        noise_scale = 0.1 * round_idx
-                        noise = torch.randn_like(c_i) * noise_scale
-                        c_round = c_i + noise
-                    else:
-                        c_round = c_i
-
                     # 执行匈牙利算法
-                    row_ind, col_ind = linear_sum_assignment(c_round.numpy())
-
-                    # # 过滤已使用的queries和高成本匹配
-                    # valid_mask = (c_i[row_ind, col_ind] < 8.0) & \
-                    #              (~torch.isin(torch.tensor(row_ind),
-                    #                           torch.tensor(all_src_indices)))
-                    #
-                    # row_ind = row_ind[valid_mask]
-                    # col_ind = col_ind[valid_mask]
-
-                    # if len(row_ind) == 0:
-                    #     break
-
+                    row_ind, col_ind = linear_sum_assignment(c_i)
+                    
+                    # 获取当前轮次的匹配成本
+                    match_costs = c_i[row_ind, col_ind]
+                    
+                    # 将成本转换为权重（成本越高，权重越大）
+                    # 使用softmax来归一化权重，并反转成本（因为我们要让高成本有高权重）
+                    max_cost = match_costs.max()
+                    normalized_costs = (max_cost - match_costs) / max_cost  # 归一化到[0,1]
+                    inner_weights = torch.softmax(normalized_costs * 5.0, dim=0)  # 使用温度参数5.0来调整权重分布
+                    
+                    # 存储匹配结果和权重
                     all_src_indices.extend(row_ind.tolist())
                     all_tgt_indices.extend(col_ind.tolist())
+                    all_weights.extend(inner_weights.tolist())
 
                     # 增加已使用queries的成本
                     c_i[row_ind, :] += 2.0 * (round_idx + 1)
 
-                indices.append((torch.as_tensor(all_src_indices, dtype=torch.int64),
-                                torch.as_tensor(all_tgt_indices, dtype=torch.int64)))
+                indices.append((
+                    torch.as_tensor(all_src_indices, dtype=torch.int64),
+                    torch.as_tensor(all_tgt_indices, dtype=torch.int64)
+                ))
+                weights.append(torch.as_tensor(all_weights, dtype=torch.float32))
             
-            return indices
+            return indices, weights
         else:
             indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
-            return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+            indices = [(torch.as_tensor(i, dtype=torch.int64), 
+                       torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+            weights = [torch.ones(len(i), dtype=torch.float32) for i, _ in indices]
+            return indices, weights

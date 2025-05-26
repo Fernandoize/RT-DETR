@@ -54,7 +54,7 @@ class SetCriterion(nn.Module):
         self.alpha = alpha
         self.gamma = gamma
 
-    def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
+    def loss_labels(self, outputs, targets, indices, num_boxes, log=True, weights=None):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
@@ -67,7 +67,19 @@ class SetCriterion(nn.Module):
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
 
-        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
+        if weights is not None:
+            # 对于分类损失，我们需要将权重应用到对应的预测上
+            weights = torch.cat(weights)
+            # 创建一个与src_logits相同形状的权重张量
+            weight_tensor = torch.ones_like(src_logits[:, :, 0])
+            weight_tensor[idx] = weights
+            # 将权重应用到交叉熵损失
+            loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, 
+                                    self.empty_weight, reduction='none')
+            loss_ce = (loss_ce * weight_tensor).sum() / num_boxes
+        else:
+            loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
+
         losses = {'loss_ce': loss_ce}
 
         if log:
@@ -115,7 +127,7 @@ class SetCriterion(nn.Module):
 
         return {'loss_focal': loss}
 
-    def loss_labels_vfl(self, outputs, targets, indices, num_boxes, log=True):
+    def loss_labels_vfl(self, outputs, targets, indices, num_boxes, log=True, weights=None):
         assert 'pred_boxes' in outputs
         idx = self._get_src_permutation_idx(indices)
 
@@ -138,6 +150,15 @@ class SetCriterion(nn.Module):
         pred_score = F.sigmoid(src_logits).detach()
         weight = self.alpha * pred_score.pow(self.gamma) * (1 - target) + target_score
 
+        if weights is not None:
+            # 对于VFL损失，我们需要将权重应用到对应的预测上
+            weights = torch.cat(weights)
+            # 创建一个与src_logits相同形状的权重张量
+            weight_tensor = torch.ones_like(src_logits[:, :, 0])
+            weight_tensor[idx] = weights
+            # 将权重应用到VFL损失
+            weight = weight * weight_tensor.unsqueeze(-1)
+
         loss = F.binary_cross_entropy_with_logits(src_logits, target_score, weight=weight, reduction='none')
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
 
@@ -157,7 +178,7 @@ class SetCriterion(nn.Module):
         losses = {'cardinality_error': card_err}
         return losses
 
-    def loss_boxes(self, outputs, targets, indices, num_boxes):
+    def loss_boxes(self, outputs, targets, indices, num_boxes, weights=None):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
            targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
            The target boxes are expected in format (center_x, center_y, w, h), normalized by the image size.
@@ -170,15 +191,24 @@ class SetCriterion(nn.Module):
         losses = {}
 
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction='none')
+        
+        # 应用权重到损失
+        if weights is not None:
+            weights = torch.cat(weights)
+            loss_bbox = loss_bbox * weights.unsqueeze(-1)
+            
         losses['loss_bbox'] = loss_bbox.sum() / num_boxes
 
         loss_giou = 1 - torch.diag(generalized_box_iou(
                 box_cxcywh_to_xyxy(src_boxes),
                 box_cxcywh_to_xyxy(target_boxes)))
-        # loss_giou = self.wasserstein_loss(src_boxes, target_boxes) + loss_giou
+        
+        # 应用权重到GIoU损失
+        if weights is not None:
+            loss_giou = loss_giou * weights
+            
         losses['loss_giou'] = loss_giou.sum() / num_boxes
 
-        # wasserstein_loss = self.wasserstein_loss(src_boxes, target_boxes)
         return losses
 
     def loss_masks(self, outputs, targets, indices, num_boxes):
@@ -222,7 +252,7 @@ class SetCriterion(nn.Module):
         tgt_idx = torch.cat([tgt for (_, tgt) in indices])
         return batch_idx, tgt_idx
 
-    def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
+    def get_loss(self, loss, outputs, targets, indices, num_boxes, weights=None):
         loss_map = {
             'labels': self.loss_labels,
             'cardinality': self.loss_cardinality,
@@ -234,7 +264,7 @@ class SetCriterion(nn.Module):
             'query_diversity': self.loss_query_diversity,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
-        return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
+        return loss_map[loss](outputs, targets, indices, num_boxes, weights=weights)
 
     def rebuild_targets_for_o2m(self, targets, indices):
         new_targets = []
@@ -272,7 +302,7 @@ class SetCriterion(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if 'aux' not in k}
 
         # 使用扩展后的目标进行匹配
-        indices = self.matcher(outputs_without_aux, targets)
+        indices, weights = self.matcher(outputs_without_aux, targets)
 
         o2m_targets = targets
         # 复制targets以匹配one-to-many策略
@@ -303,14 +333,14 @@ class SetCriterion(nn.Module):
         # 计算所有请求的损失
         losses = {}
         for loss in self.losses:
-            l_dict = self.get_loss(loss, outputs, o2m_targets, indices, num_boxes)
+            l_dict = self.get_loss(loss, outputs, o2m_targets, indices, num_boxes, weights=weights)
             l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
             losses.update(l_dict)
 
         # 处理辅助损失
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
-                indices = self.matcher(aux_outputs, o2m_targets)
+                indices, weights = self.matcher(aux_outputs, o2m_targets)
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -321,9 +351,9 @@ class SetCriterion(nn.Module):
                         kwargs = {'log': False}
                     # For encoder auxiliary outputs, use binary classification loss
                     if aux_outputs['pred_logits'].shape[-1] == 2:  # Binary classification case
-                        l_dict = self.loss_labels_bce(aux_outputs, o2m_targets, indices, num_boxes, **kwargs)
+                        l_dict = self.loss_labels_bce(aux_outputs, o2m_targets, indices, num_boxes, weights)
                     else:  # Decoder auxiliary outputs, use original multi-class loss
-                        l_dict = self.get_loss(loss, aux_outputs, o2m_targets, indices, num_boxes, **kwargs)
+                        l_dict = self.get_loss(loss, aux_outputs, o2m_targets, indices, num_boxes, weights)
                     l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
                     l_dict = {k + f'_aux_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
