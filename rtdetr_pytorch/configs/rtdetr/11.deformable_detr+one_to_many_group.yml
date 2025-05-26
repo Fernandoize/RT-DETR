@@ -4,8 +4,15 @@ __include__: [
 ]
 
 use_wandb: True
-wandb_name: deformable_detr+one_to_many_group
+wandb_name: deformable_detr+one_to_many
 wandb_id: "20011"
 
 HybridEncoder:
-  use_fpn: True
+  deformable_encoder: False
+  use_cross_attention: True
+
+SetCriterion:
+
+  matcher:
+    type: HungarianMatcher
+    o2m: 4
