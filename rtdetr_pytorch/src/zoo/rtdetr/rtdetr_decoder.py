@@ -520,7 +520,8 @@ class RTDETRTransformer(nn.Module):
                  eval_idx=-1,
                  eps=1e-2,
                  aux_loss=True,
-                 use_dynamic_range=False):
+                 use_dynamic_range=False,
+                 num_queries_o2m=300):
 
         super(RTDETRTransformer, self).__init__()
         assert position_embed_type in ['sine', 'learned'], \
@@ -535,9 +536,9 @@ class RTDETRTransformer(nn.Module):
         self.feat_strides = feat_strides
         self.num_levels = num_levels
         self.num_classes = num_classes
-        self.num_queries = num_queries
-        self.num_learn_query = int(num_queries * 0.5)
-        self.num_topk_query = int(self.num_queries - self.num_learn_query)
+        self.num_queries = num_queries_o2m
+        self.num_learn_query = 0
+        self.num_topk_query = int(num_queries - self.num_learn_query)
         # self.query_count = 0
         self.eps = eps
         self.num_decoder_layers = num_decoder_layers
@@ -577,16 +578,17 @@ class RTDETRTransformer(nn.Module):
         # encoder head: 对编码器进一步处理，生成编码器的最终输出
         # layernorm可以尝试替换为hekaiming最新提出的模块或者dw卷积
         self.enc_output = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim,)
-        )
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim,))
 
         # 生成类别分数和边界框坐标
         # TODO 添加一个物体数量预测头，根据预测的数量作为权重保留query
-        self.enc_score_head = nn.Linear(hidden_dim, num_classes)  # Changed to binary classification (background/foreground)
+        self.enc_score_head = nn.Linear(hidden_dim, num_classes)
+        # Changed to binary classification (background/foreground)
         self.enc_bbox_head = MLP(hidden_dim, hidden_dim, 4, num_layers=3)
 
         # decoder head
+        # 注意：这里不需要区分多个dec_score_head, yinwei
         # 解码器的输出：类别分数、边界框坐标、边界框质量
         self.dec_score_head = nn.ModuleList([
             nn.Linear(hidden_dim, num_classes)  # Keep multi-class classification
@@ -605,7 +607,6 @@ class RTDETRTransformer(nn.Module):
 
     def _reset_parameters(self):
         bias = bias_init_with_prob(0.01)
-
         init.constant_(self.enc_score_head.bias, bias)
         init.constant_(self.enc_bbox_head.layers[-1].weight, 0)
         init.constant_(self.enc_bbox_head.layers[-1].bias, 0)
@@ -620,6 +621,8 @@ class RTDETRTransformer(nn.Module):
         init.xavier_uniform_(self.tgt_embed.weight)
         init.xavier_uniform_(self.query_pos_head.layers[0].weight)
         init.xavier_uniform_(self.query_pos_head.layers[1].weight)
+        for l in self.input_proj:
+            init.xavier_uniform_(l[0].weight)
 
 
     def _build_input_proj_layer(self, feat_channels):
@@ -731,6 +734,7 @@ class RTDETRTransformer(nn.Module):
         # 将token中边界值也置为0
         memory = valid_mask.to(memory.dtype) * memory  # TODO fix type error for onnx export
 
+        targets, reference_points_unacts, enc_topk_bboxes, enc_topk_logits = [], [], [], []
         output_memory = self.enc_output(memory)
 
         # 每个token输出一个classes和bboxes
@@ -760,13 +764,13 @@ class RTDETRTransformer(nn.Module):
         reference_points_unact = enc_outputs_coord_unact.gather(dim=1, \
             index=topk_ind.unsqueeze(-1).repeat(1, 1, enc_outputs_coord_unact.shape[-1]))
 
-        enc_topk_bboxes = F.sigmoid(reference_points_unact)
+        enc_topk_bbox = F.sigmoid(reference_points_unact)
         if denoising_bbox_unact is not None:
             reference_points_unact = torch.concat(
                 [denoising_bbox_unact, reference_points_unact], 1)
 
         # 对于二分类，我们只需要前景类别的分数
-        enc_topk_logits = enc_outputs_class.gather(dim=1, \
+        enc_topk_logit = enc_outputs_class.gather(dim=1, \
             index=topk_ind.unsqueeze(-1).repeat(1, 1, 2))  # Shape: [bs, num_queries, 2]
 
         # extract region features
@@ -783,7 +787,20 @@ class RTDETRTransformer(nn.Module):
             target = torch.concat([denoising_class, topk_target[:,:self.num_topk_query,:],learn_target], 1)
         else:
             target = torch.concat([topk_target[:,:self.num_topk_query,:], learn_target], 1)
-        return target, reference_points_unact.detach(), enc_topk_bboxes, enc_topk_logits
+
+        if not self.training:
+            return target, reference_points_unact.detach(), enc_topk_bbox, enc_topk_logit
+
+        targets.append(target)
+        reference_points_unacts.append(reference_points_unact)
+        enc_topk_bboxes.append(enc_topk_bbox)
+        enc_topk_logits.append(enc_topk_logit)
+
+        targets = torch.concat(targets, 1)
+        reference_points_unacts = torch.concat(reference_points_unacts, 1)
+        enc_topk_bboxes = torch.concat(enc_topk_bboxes, 1)
+        enc_topk_logits = torch.concat(enc_topk_logits, 1)
+        return targets, reference_points_unacts, enc_topk_bboxes, enc_topk_logits
 
 
     def forward(self, feats, targets=None):

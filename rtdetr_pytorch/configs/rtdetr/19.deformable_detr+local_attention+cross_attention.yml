@@ -3,8 +3,8 @@ __include__: [
   './1.deformable_detr_baseline.yml',
 ]
 
-fraction: 0.05
-use_wandb: True
+fraction: 0.1
+use_wandb: False
 wandb_name: deformable_detr+local_attention+cross_attention
 wandb_id: "20091"
 
@@ -12,4 +12,56 @@ HybridEncoder:
   use_global_attention: False
   deformable_encoder: False
   use_cross_attention: True
-  use_encoder_idx: [ 0,1,2]
+  use_encoder_idx: [1,2]
+
+train_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: ./configs/dataset/dfui/images/
+    ann_file: ./configs/dataset/dfui/annotations/instances_train2017.json
+    return_masks: False
+    transforms:
+      type: Compose
+      ops:
+        - { type: RandomPhotometricDistort, p: 0.5 }
+        - { type: RandomZoomOut, fill: 0 }
+        - { type: RandomIoUCrop, p: 0.8 }
+        - { type: SanitizeBoundingBoxes, min_size: 1 }
+        - { type: RandomHorizontalFlip }
+        - { type: Resize, size: [ 640, 640 ], }
+        # - {type: Resize, size: 639, max_size: 640}
+        # - {type: PadToSize, spatial_size: 640}
+        - {type: ToImage}
+        - {type: ConvertImageDtype}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertBox, out_fmt: 'cxcywh', normalize: True}
+  shuffle: True
+  batch_size: 8
+  num_workers: 0
+  drop_last: True
+  collate_fn: default_collate_fn
+  pin_memory: True
+
+
+val_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: configs/dataset/dfui/images/
+    ann_file: configs/dataset/dfui/annotations/instances_val2017.json
+    transforms:
+      type: Compose
+      ops:
+        # - {type: Resize, size: 639, max_size: 640}
+        # - {type: PadToSize, spatial_size: 640}
+        - { type: Resize, size: [ 640, 640 ], }
+        - {type: ToImage}
+        - {type: ConvertImageDtype}
+
+  shuffle: False
+  batch_size: 8
+  num_workers: 0
+  drop_last: False
+  collate_fn: default_collate_fn
+  pin_memory: True

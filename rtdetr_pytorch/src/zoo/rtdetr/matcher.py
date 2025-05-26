@@ -21,23 +21,7 @@ from src.zoo.loss.wasserstein_loss import WassersteinLoss
 
 @register
 class HungarianMatcher(nn.Module):
-    """This class computes an assignment between the targets and the predictions of the network
-
-    For efficiency reasons, the targets don't include the no_object. Because of this, in general,
-    there are more predictions than targets. In this case, we do a 1-to-1 matching of the best predictions,
-    while the others are un-matched (and thus treated as non-objects).
-    """
-
-    __share__ = ['use_focal_loss', 'group_detr']
-
-    def __init__(self, weight_dict, use_focal_loss=False, alpha=0.25, gamma=2.0, group_detr=1):
-        """Creates the matcher
-
-        Params:
-            cost_class: This is the relative weight of the classification error in the matching cost
-            cost_bbox: This is the relative weight of the L1 error of the bounding box coordinates in the matching cost
-            cost_giou: This is the relative weight of the giou loss of the bounding box in the matching cost
-        """
+    def __init__(self, weight_dict, use_focal_loss=False, alpha=0.25, gamma=2.0, group_detr=1, o2m=4):
         super().__init__()
         # 分类损失、边界框损失、iou损失
         self.group_detr = group_detr
@@ -51,6 +35,7 @@ class HungarianMatcher(nn.Module):
         self.gamma = gamma
 
         assert self.cost_class != 0 or self.cost_bbox != 0 or self.cost_giou != 0, "all costs cant be 0"
+        self.o2m = o2m  # one-to-many 的倍数
 
     @torch.no_grad()
     def forward(self, outputs, targets):
@@ -131,21 +116,21 @@ class HungarianMatcher(nn.Module):
 
         # 5. 支持将查询分为多个组进行匹配, 每个组求最优解，相当于每个target对应多个最佳的query, 但只是局部最佳
         sizes = [len(v["boxes"]) for v in targets]
-        # indices = []
-        # g_num_queries = num_queries // self.group_detr
-        # C_list = C.split(g_num_queries, dim=1)
-        # for g_i in range(self.group_detr):
-        #     C_g = C_list[g_i]
-        #     indices_g = [linear_sum_assignment(c[i]) for i, c in enumerate(C_g.split(sizes, -1))]
-        #     if g_i == 0:
-        #         indices = indices_g
-        #     else:
-        #         indices = [
-        #             # 这里的行坐标需要加上g_i * g_num_queries，因为每个组内的匹配结果需要加上该组内的query的索引
-        #             (np.concatenate([indice1[0], indice2[0] + g_num_queries * g_i]), np.concatenate([indice1[1], indice2[1]]))
-        #             for indice1, indice2 in zip(indices, indices_g)
-        #         ]
-        # # 每个group取M个query, 10个group则是M * 10
-        # return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
-        indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
-        return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+
+        # 对每个图像分别进行匹配
+        if self.training and self.o2m > 0:
+            indices = []
+            for i, c in enumerate(C.split(sizes, -1)):
+                # 对每个目标框，选择 top-k 个预测框
+                topk_values, topk_indices = c[i].topk(self.o2m, dim=0)
+
+                # 构建匹配索引
+                src_indices = topk_indices.flatten()
+                tgt_indices = torch.arange(sizes[i], device=c.device).repeat_interleave(self.o2m)
+
+                indices.append((src_indices, tgt_indices))
+
+            return indices
+        else:
+            indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+            return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
