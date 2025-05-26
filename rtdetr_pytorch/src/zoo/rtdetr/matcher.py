@@ -121,15 +121,26 @@ class HungarianMatcher(nn.Module):
         if self.training and self.o2m > 0:
             indices = []
             for i, c in enumerate(C.split(sizes, -1)):
-                # 对每个目标框，选择 top-k 个预测框
-                topk_values, topk_indices = c[i].topk(self.o2m, dim=0)
+                # 初始化mask和存储列表
+                src_indices = []
+                tgt_indices = []
 
-                # 构建匹配索引
-                src_indices = topk_indices.flatten()
-                tgt_indices = torch.arange(sizes[i], device=c.device).repeat_interleave(self.o2m)
+                # 迭代选择topk个匹配
+                for _ in range(self.o2m):
+                    # 使用匈牙利算法找到当前最优匹配
+                    row_ind, col_ind = linear_sum_assignment(c[i])
 
-                indices.append((src_indices, tgt_indices))
+                    # 添加当前匹配
+                    src_indices.extend(row_ind)
+                    tgt_indices.extend(col_ind)
 
+                    # 将已匹配的位置设为无穷大
+                    c[i][row_ind, :] = 1e8
+                    c[i][:, col_ind] = 1e8
+                
+                indices.append((torch.tensor(src_indices, dtype=torch.int64), 
+                              torch.tensor(tgt_indices, dtype=torch.int64)))
+            
             return indices
         else:
             indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]

@@ -248,6 +248,7 @@ class SetCriterion(nn.Module):
         # 使用扩展后的目标进行匹配
         indices = self.matcher(outputs_without_aux, targets)
 
+        o2m_targets = targets
         # 复制targets以匹配one-to-many策略
         if self.training and self.o2m > 0:
             duplicated_targets = []
@@ -255,19 +256,19 @@ class SetCriterion(nn.Module):
                 duplicated_target = {}
                 for k, v in target.items():
                     if k == 'labels':
-                        # 复制标签
-                        duplicated_target[k] = v.repeat_interleave(self.o2m)
+                        # 复制标签，按顺序重复整个序列
+                        duplicated_target[k] = v.repeat(self.o2m)
                     elif k == 'boxes':
-                        # 复制边界框
-                        duplicated_target[k] = v.repeat_interleave(self.o2m, dim=0)
+                        # 复制边界框，按顺序重复整个序列
+                        duplicated_target[k] = v.repeat(self.o2m, 1)
                     else:
                         # 其他字段保持不变
                         duplicated_target[k] = v
                 duplicated_targets.append(duplicated_target)
-            targets = duplicated_targets
+            o2m_targets = duplicated_targets
 
         # 计算目标框的数量，考虑 one-to-many 的复制
-        num_boxes = sum(len(t["labels"]) for t in targets) * self.group_detr
+        num_boxes = sum(len(t["labels"]) for t in o2m_targets) * self.group_detr
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
         if is_dist_available_and_initialized():
             torch.distributed.all_reduce(num_boxes)
@@ -276,14 +277,14 @@ class SetCriterion(nn.Module):
         # 计算所有请求的损失
         losses = {}
         for loss in self.losses:
-            l_dict = self.get_loss(loss, outputs, targets, indices, num_boxes)
+            l_dict = self.get_loss(loss, outputs, o2m_targets, indices, num_boxes)
             l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
             losses.update(l_dict)
 
         # 处理辅助损失
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
-                indices = self.matcher(aux_outputs, targets)
+                indices = self.matcher(aux_outputs, o2m_targets)
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -294,9 +295,9 @@ class SetCriterion(nn.Module):
                         kwargs = {'log': False}
                     # For encoder auxiliary outputs, use binary classification loss
                     if aux_outputs['pred_logits'].shape[-1] == 2:  # Binary classification case
-                        l_dict = self.loss_labels_bce(aux_outputs, targets, indices, num_boxes, **kwargs)
+                        l_dict = self.loss_labels_bce(aux_outputs, o2m_targets, indices, num_boxes, **kwargs)
                     else:  # Decoder auxiliary outputs, use original multi-class loss
-                        l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
+                        l_dict = self.get_loss(loss, aux_outputs, o2m_targets, indices, num_boxes, **kwargs)
                     l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
                     l_dict = {k + f'_aux_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
@@ -330,35 +331,17 @@ class SetCriterion(nn.Module):
         dn_positive_idx, dn_num_group = dn_meta["dn_positive_idx"], dn_meta["dn_num_group"]
         num_gts = [len(t['labels']) for t in targets]
         device = targets[0]['labels'].device
-        
+
         dn_match_indices = []
         for i, num_gt in enumerate(num_gts):
             if num_gt > 0:
-                # 计算每个目标框被复制的次数
-                o2m = num_gt * dn_num_group // len(dn_positive_idx[i]) if len(dn_positive_idx[i]) > 0 else 0
-                if o2m > 0:
-                    # 如果存在one-to-many匹配，需要调整gt_idx的长度
-                    gt_idx = torch.arange(num_gt, dtype=torch.int64, device=device)
-                    gt_idx = gt_idx.repeat_interleave(o2m)
-                    # 确保长度匹配
-                    if len(gt_idx) > len(dn_positive_idx[i]):
-                        gt_idx = gt_idx[:len(dn_positive_idx[i])]
-                    elif len(gt_idx) < len(dn_positive_idx[i]):
-                        # 如果gt_idx太短，需要重复一些索引
-                        repeat_times = len(dn_positive_idx[i]) // len(gt_idx) + 1
-                        gt_idx = gt_idx.repeat(repeat_times)
-                        gt_idx = gt_idx[:len(dn_positive_idx[i])]
-                else:
-                    # 如果没有one-to-many匹配，使用原始逻辑
-                    gt_idx = torch.arange(num_gt, dtype=torch.int64, device=device)
-                    gt_idx = gt_idx.tile(dn_num_group)
-                
-                assert len(dn_positive_idx[i]) == len(gt_idx), f"Length mismatch: dn_positive_idx[{i}]={len(dn_positive_idx[i])}, gt_idx={len(gt_idx)}"
+                gt_idx = torch.arange(num_gt, dtype=torch.int64, device=device)
+                gt_idx = gt_idx.tile(dn_num_group)
+                assert len(dn_positive_idx[i]) == len(gt_idx)
                 dn_match_indices.append((dn_positive_idx[i], gt_idx))
             else:
                 dn_match_indices.append((torch.zeros(0, dtype=torch.int64, device=device), \
-                    torch.zeros(0, dtype=torch.int64,  device=device)))
-        
+                                         torch.zeros(0, dtype=torch.int64, device=device)))
         return dn_match_indices
 
     def loss_query_diversity(self, outputs, targets, indices, num_boxes, log=True):
