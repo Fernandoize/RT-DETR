@@ -70,6 +70,8 @@ class HungarianMatcher(nn.Module):
         # 2. 合并batch_size和num_queries维度,
         out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
 
+        device = outputs["pred_boxes"].device
+
         # 3. 获取target 标签和bbox
         # Also concat the target labels and boxes
         if out_prob.shape[-1] == 2:
@@ -149,15 +151,15 @@ class HungarianMatcher(nn.Module):
                     c_i[row_ind, :] += 2.0 * (round_idx + 1)
 
                 indices.append((
-                    torch.as_tensor(all_src_indices, dtype=torch.int64),
-                    torch.as_tensor(all_tgt_indices, dtype=torch.int64)
+                    torch.as_tensor(all_src_indices, dtype=torch.int64).to(device),
+                    torch.as_tensor(all_tgt_indices, dtype=torch.int64).to(device)
                 ))
-                weights.append(torch.as_tensor(all_weights, dtype=torch.float32))
+                weights.append(torch.as_tensor(all_weights, dtype=torch.float32).to(device))
             
             return indices, weights
         else:
             indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
-            indices = [(torch.as_tensor(i, dtype=torch.int64), 
-                       torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
-            weights = [torch.ones(len(i), dtype=torch.float32) for i, _ in indices]
+            indices = [(torch.as_tensor(i, dtype=torch.int64).to(device),
+                       torch.as_tensor(j, dtype=torch.int64).to(device)) for i, j in indices]
+            weights = [torch.ones(len(i), dtype=torch.float32).to(device) for i, _ in indices]
             return indices, weights
