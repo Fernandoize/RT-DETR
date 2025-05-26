@@ -29,7 +29,7 @@ class SetCriterion(nn.Module):
     __share__ = ['num_classes', 'group_detr']
     __inject__ = ['matcher', ]
 
-    def __init__(self, matcher, weight_dict, losses, alpha=0.2, gamma=2.0, eos_coef=1e-4, num_classes=80, group_detr=1):
+    def __init__(self, matcher, weight_dict, losses, alpha=0.2, gamma=2.0, eos_coef=1e-4, num_classes=80, group_detr=1, o2m=4):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -41,6 +41,7 @@ class SetCriterion(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.group_detr = group_detr
+        self.o2m = o2m
         self.matcher = matcher
         self.weight_dict = weight_dict
         self.losses = losses
@@ -247,6 +248,24 @@ class SetCriterion(nn.Module):
         # 使用扩展后的目标进行匹配
         indices = self.matcher(outputs_without_aux, targets)
 
+        # 复制targets以匹配one-to-many策略
+        if self.training and self.o2m > 0:
+            duplicated_targets = []
+            for i, target in enumerate(targets):
+                duplicated_target = {}
+                for k, v in target.items():
+                    if k == 'labels':
+                        # 复制标签
+                        duplicated_target[k] = v.repeat_interleave(self.o2m)
+                    elif k == 'boxes':
+                        # 复制边界框
+                        duplicated_target[k] = v.repeat_interleave(self.o2m, dim=0)
+                    else:
+                        # 其他字段保持不变
+                        duplicated_target[k] = v
+                duplicated_targets.append(duplicated_target)
+            targets = duplicated_targets
+
         # 计算目标框的数量，考虑 one-to-many 的复制
         num_boxes = sum(len(t["labels"]) for t in targets) * self.group_detr
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
@@ -315,9 +334,26 @@ class SetCriterion(nn.Module):
         dn_match_indices = []
         for i, num_gt in enumerate(num_gts):
             if num_gt > 0:
-                gt_idx = torch.arange(num_gt, dtype=torch.int64, device=device)
-                gt_idx = gt_idx.tile(dn_num_group)
-                assert len(dn_positive_idx[i]) == len(gt_idx)
+                # 计算每个目标框被复制的次数
+                o2m = num_gt * dn_num_group // len(dn_positive_idx[i]) if len(dn_positive_idx[i]) > 0 else 0
+                if o2m > 0:
+                    # 如果存在one-to-many匹配，需要调整gt_idx的长度
+                    gt_idx = torch.arange(num_gt, dtype=torch.int64, device=device)
+                    gt_idx = gt_idx.repeat_interleave(o2m)
+                    # 确保长度匹配
+                    if len(gt_idx) > len(dn_positive_idx[i]):
+                        gt_idx = gt_idx[:len(dn_positive_idx[i])]
+                    elif len(gt_idx) < len(dn_positive_idx[i]):
+                        # 如果gt_idx太短，需要重复一些索引
+                        repeat_times = len(dn_positive_idx[i]) // len(gt_idx) + 1
+                        gt_idx = gt_idx.repeat(repeat_times)
+                        gt_idx = gt_idx[:len(dn_positive_idx[i])]
+                else:
+                    # 如果没有one-to-many匹配，使用原始逻辑
+                    gt_idx = torch.arange(num_gt, dtype=torch.int64, device=device)
+                    gt_idx = gt_idx.tile(dn_num_group)
+                
+                assert len(dn_positive_idx[i]) == len(gt_idx), f"Length mismatch: dn_positive_idx[{i}]={len(dn_positive_idx[i])}, gt_idx={len(gt_idx)}"
                 dn_match_indices.append((dn_positive_idx[i], gt_idx))
             else:
                 dn_match_indices.append((torch.zeros(0, dtype=torch.int64, device=device), \

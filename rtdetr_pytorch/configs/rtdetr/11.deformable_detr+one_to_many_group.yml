@@ -12,6 +12,11 @@ HybridEncoder:
   use_cross_attention: True
 
 SetCriterion:
+  weight_dict: { loss_vfl: 1, loss_bbox: 5, loss_giou: 2 }
+  losses: [ 'vfl', 'boxes' ]
+  alpha: 0.75
+  gamma: 2.0
+  o2m: 4
 
   matcher:
     type: HungarianMatcher
