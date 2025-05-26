@@ -236,6 +236,32 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
+    def rebuild_targets_for_o2m(self, targets, indices):
+        new_targets = []
+        new_indices = []
+        device=targets[0]['labels'].device
+        for batch_idx, (src_idx, tgt_idx) in enumerate(indices):
+            if len(src_idx) == 0:
+                # 处理空匹配
+                new_targets.append({
+                    'labels': torch.empty(0, dtype=torch.long).to(device),
+                    'boxes': torch.empty(0, 4).to(device)
+                })
+                new_indices.append((torch.empty(0, dtype=torch.long).to(device),
+                                    torch.empty(0, dtype=torch.long).to(device)))
+            else:
+                # 根据tgt_idx复制对应的labels和boxes
+                original = targets[batch_idx]
+                new_targets.append({
+                    'labels': original['labels'][tgt_idx],
+                    'boxes': original['boxes'][tgt_idx]
+                })
+                # 重新映射tgt索引为连续的0,1,2...
+                new_tgt_idx = torch.arange(len(tgt_idx)).to(device)
+                new_indices.append((src_idx, new_tgt_idx))
+
+        return new_targets, new_indices
+
     def forward(self, outputs, targets):
         """ This performs the loss computation.
         Parameters:
@@ -257,10 +283,10 @@ class SetCriterion(nn.Module):
                 for k, v in target.items():
                     if k == 'labels':
                         # 复制标签
-                        duplicated_target[k] = v.repeat_interleave(self.o2m)
+                        duplicated_target[k] = v.repeat(self.o2m)
                     elif k == 'boxes':
                         # 复制边界框
-                        duplicated_target[k] = v.repeat_interleave(self.o2m, dim=0)
+                        duplicated_target[k] = v.repeat(self.o2m, 1)
                     else:
                         # 其他字段保持不变
                         duplicated_target[k] = v

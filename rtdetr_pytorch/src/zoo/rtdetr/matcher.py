@@ -121,27 +121,38 @@ class HungarianMatcher(nn.Module):
         if self.training and self.o2m > 0:
             indices = []
             for i, c in enumerate(C.split(sizes, -1)):
-                c_i = c[i]  # shape: [num_queries, num_targets]
-
+                c_i = c[i].clone()
                 all_src_indices = []
                 all_tgt_indices = []
 
-                # 为每个target找到最好的o2m个queries
-                for tgt_idx in range(c_i.shape[1]):
-                    target_costs = c_i[:, tgt_idx]  # 所有queries对这个target的成本
+                for round_idx in range(self.o2m):
+                    # 为后续轮次增加噪声，鼓励多样性
+                    if round_idx > 0:
+                        noise_scale = 0.1 * round_idx
+                        noise = torch.randn_like(c_i) * noise_scale
+                        c_round = c_i + noise
+                    else:
+                        c_round = c_i
 
-                    # 找到成本最小的o2m个queries
-                    topk_values, topk_indices = torch.topk(target_costs,
-                                                           min(self.o2m, len(target_costs)),
-                                                           largest=False)
+                    # 执行匈牙利算法
+                    row_ind, col_ind = linear_sum_assignment(c_round.numpy())
 
-                    # 过滤成本过高的匹配
-                    valid_mask = topk_values < 10.0
-                    valid_indices = topk_indices[valid_mask]
+                    # # 过滤已使用的queries和高成本匹配
+                    # valid_mask = (c_i[row_ind, col_ind] < 8.0) & \
+                    #              (~torch.isin(torch.tensor(row_ind),
+                    #                           torch.tensor(all_src_indices)))
+                    #
+                    # row_ind = row_ind[valid_mask]
+                    # col_ind = col_ind[valid_mask]
 
-                    for src_idx in valid_indices:
-                        all_src_indices.append(src_idx.item())
-                        all_tgt_indices.append(tgt_idx)
+                    # if len(row_ind) == 0:
+                    #     break
+
+                    all_src_indices.extend(row_ind.tolist())
+                    all_tgt_indices.extend(col_ind.tolist())
+
+                    # 增加已使用queries的成本
+                    c_i[row_ind, :] += 2.0 * (round_idx + 1)
 
                 indices.append((torch.as_tensor(all_src_indices, dtype=torch.int64),
                                 torch.as_tensor(all_tgt_indices, dtype=torch.int64)))
