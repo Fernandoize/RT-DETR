@@ -256,11 +256,11 @@ class SetCriterion(nn.Module):
                 duplicated_target = {}
                 for k, v in target.items():
                     if k == 'labels':
-                        # 复制标签，按顺序重复整个序列
-                        duplicated_target[k] = v.repeat(self.o2m)
+                        # 复制标签
+                        duplicated_target[k] = v.repeat_interleave(self.o2m)
                     elif k == 'boxes':
-                        # 复制边界框，按顺序重复整个序列
-                        duplicated_target[k] = v.repeat(self.o2m, 1)
+                        # 复制边界框
+                        duplicated_target[k] = v.repeat_interleave(self.o2m, dim=0)
                     else:
                         # 其他字段保持不变
                         duplicated_target[k] = v

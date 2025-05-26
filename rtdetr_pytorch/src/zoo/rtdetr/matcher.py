@@ -121,24 +121,30 @@ class HungarianMatcher(nn.Module):
         if self.training and self.o2m > 0:
             indices = []
             for i, c in enumerate(C.split(sizes, -1)):
-                # 初始化mask和存储列表
-                src_indices = []
-                tgt_indices = []
+                c_i = c[i]  # shape: [num_queries, num_targets]
 
-                # 迭代选择topk个匹配
-                for _ in range(self.o2m):
-                    # 使用匈牙利算法找到当前最优匹配
-                    row_ind, col_ind = linear_sum_assignment(c[i])
+                all_src_indices = []
+                all_tgt_indices = []
 
-                    # 添加当前匹配
-                    src_indices.extend(row_ind)
-                    tgt_indices.extend(col_ind)
+                # 为每个target找到最好的o2m个queries
+                for tgt_idx in range(c_i.shape[1]):
+                    target_costs = c_i[:, tgt_idx]  # 所有queries对这个target的成本
 
-                    # 将已匹配的位置设为无穷大
-                    c[i][row_ind, :] = 1e8
+                    # 找到成本最小的o2m个queries
+                    topk_values, topk_indices = torch.topk(target_costs,
+                                                           min(self.o2m, len(target_costs)),
+                                                           largest=False)
 
-                indices.append((torch.tensor(src_indices, dtype=torch.int64), 
-                              torch.tensor(tgt_indices, dtype=torch.int64)))
+                    # 过滤成本过高的匹配
+                    valid_mask = topk_values < 10.0
+                    valid_indices = topk_indices[valid_mask]
+
+                    for src_idx in valid_indices:
+                        all_src_indices.append(src_idx.item())
+                        all_tgt_indices.append(tgt_idx)
+
+                indices.append((torch.as_tensor(all_src_indices, dtype=torch.int64),
+                                torch.as_tensor(all_tgt_indices, dtype=torch.int64)))
             
             return indices
         else:
