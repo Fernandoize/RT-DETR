@@ -136,19 +136,33 @@ class HungarianMatcher(nn.Module):
                     # 获取当前轮次的匹配成本
                     match_costs = c_i[row_ind, col_ind]
                     
-                    # 将成本转换为权重（成本越高，权重越大）
-                    # 使用softmax来归一化权重，并反转成本（因为我们要让高成本有高权重）
-                    max_cost = match_costs.max()
-                    normalized_costs = (max_cost - match_costs) / max_cost  # 归一化到[0,1]
-                    inner_weights = torch.softmax(normalized_costs * 5.0, dim=0)  # 使用温度参数5.0来调整权重分布
+                    # 将成本转换为权重（成本越低，权重越大）
+                    if len(match_costs) > 0:
+                        # 使用指数衰减的权重，添加数值稳定性
+                        max_cost = match_costs.max()
+                        min_cost = match_costs.min()
+                        if max_cost > min_cost:
+                            # 归一化到[0,1]，避免除零
+                            normalized_costs = (match_costs - min_cost) / (max_cost - min_cost)
+                            # 使用clamp确保数值在合理范围内
+                            normalized_costs = torch.clamp(normalized_costs, min=0.0, max=1.0)
+                            # 使用较小的系数避免数值溢出
+                            inner_weights = torch.exp(-normalized_costs * 1.0)
+                            # 归一化权重，添加小的epsilon避免除零
+                            inner_weights = inner_weights / (inner_weights.sum() + 1e-8)
+                        else:
+                            # 如果所有成本相同，使用均匀权重
+                            inner_weights = torch.ones_like(match_costs) / len(match_costs)
+                    else:
+                        inner_weights = torch.empty(0, dtype=torch.float32, device=c_i.device)
                     
                     # 存储匹配结果和权重
                     all_src_indices.extend(row_ind.tolist())
                     all_tgt_indices.extend(col_ind.tolist())
                     all_weights.extend(inner_weights.tolist())
 
-                    # 增加已使用queries的成本
-                    c_i[row_ind, :] += 2.0 * (round_idx + 1)
+                    # 增加已使用queries的成本，使用较小的增量
+                    c_i[row_ind, :] += 0.5 * (round_idx + 1)  # 进一步减小增量
 
                 indices.append((
                     torch.as_tensor(all_src_indices, dtype=torch.int64).to(device),
