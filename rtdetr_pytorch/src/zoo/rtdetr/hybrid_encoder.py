@@ -431,6 +431,53 @@ class FeatureSelectionModule(nn.Module):
         return feat
 
 
+class AttentionGuidanceModule(nn.Module):
+    """注意力引导模块，用于生成注意力掩码，帮助模型关注潜在目标区域"""
+    def __init__(self, in_channels, hidden_dim=256):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, hidden_dim, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(hidden_dim)
+        self.conv2 = nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(hidden_dim)
+        self.conv3 = nn.Conv2d(hidden_dim, 1, 1)
+        self.sigmoid = nn.Sigmoid()
+        
+        # 添加空间注意力
+        self.spatial_attention = nn.Sequential(
+            nn.Conv2d(2, 1, kernel_size=7, padding=3),
+            nn.BatchNorm2d(1),
+            nn.Sigmoid()
+        )
+        
+        # 添加通道注意力
+        self.channel_attention = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(hidden_dim, hidden_dim // 4, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim // 4, hidden_dim, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # 基础特征提取
+        feat = F.relu(self.bn1(self.conv1(x)))
+        feat = F.relu(self.bn2(self.conv2(feat)))
+        
+        # 通道注意力
+        channel_att = self.channel_attention(feat)
+        feat = feat * channel_att
+        
+        # 空间注意力
+        avg_out = torch.mean(feat, dim=1, keepdim=True)
+        max_out, _ = torch.max(feat, dim=1, keepdim=True)
+        spatial_att = self.spatial_attention(torch.cat([avg_out, max_out], dim=1))
+        feat = feat * spatial_att
+        
+        # 生成掩码
+        mask = self.sigmoid(self.conv3(feat))
+        return mask
+
+
 @register
 class HybridEncoder(nn.Module):
     def __init__(self,
@@ -471,7 +518,8 @@ class HybridEncoder(nn.Module):
                  use_global_attention=False,
                  # 开启FPN
                  use_fpn=False,
-                 ):
+                 # 是否使用注意力引导
+                 use_attention_guidance=True):
         super().__init__()
         self.in_channels = in_channels
         self.feat_strides = feat_strides
@@ -484,6 +532,7 @@ class HybridEncoder(nn.Module):
         self.use_fpn = use_fpn
         self.use_cross_attention = use_cross_attention
         self.use_global_attention = use_global_attention
+        self.use_attention_guidance = use_attention_guidance
 
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
@@ -632,6 +681,14 @@ class HybridEncoder(nn.Module):
             self.downsample_selection.append(
                 FeatureSelectionModule(hidden_dim, hidden_dim)
             )
+
+        # 添加注意力引导模块
+        if self.use_attention_guidance:
+            self.attention_guidance = nn.ModuleList([
+                AttentionGuidanceModule(in_channel, hidden_dim)
+                for in_channel in in_channels
+            ])
+
         self._reset_parameters()
 
     def _reset_parameters(self):
@@ -813,7 +870,25 @@ class HybridEncoder(nn.Module):
 
     def forward(self, feats):
         assert len(feats) == len(self.in_channels)
+        
+        # 生成注意力掩码
+        attention_masks = None
+        if self.use_attention_guidance:
+            attention_masks = [
+                self.attention_guidance[i](feat)
+                for i, feat in enumerate(feats)
+            ]
+        
+        # 投影特征
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
+        
+        # 应用注意力掩码
+        if self.use_attention_guidance:
+            proj_feats = [
+                feat * mask
+                for feat, mask in zip(proj_feats, attention_masks)
+            ]
+        
         if self.use_global_attention:
             proj_feats = self.forward_global_attention(proj_feats)
         else:
