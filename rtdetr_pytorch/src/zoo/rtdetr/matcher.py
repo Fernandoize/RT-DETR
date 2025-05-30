@@ -19,7 +19,7 @@ from src.core import register
 
 @register
 class HungarianMatcher(nn.Module):
-    def __init__(self, weight_dict, use_focal_loss=False, alpha=0.25, gamma=2.0, group_detr=1, o2m=4):
+    def __init__(self, weight_dict, use_focal_loss=False, alpha=0.25, gamma=2.0, group_detr=1, o2m=0):
         super().__init__()
         # 分类损失、边界框损失、iou损失
         self.group_detr = group_detr
@@ -130,10 +130,10 @@ class HungarianMatcher(nn.Module):
                 for round_idx in range(self.o2m):
                     # 执行匈牙利算法
                     row_ind, col_ind = linear_sum_assignment(c_i)
-                    
+
                     # 获取当前轮次的匹配成本
                     match_costs = c_i[row_ind, col_ind]
-                    
+
                     # 将成本转换为权重（成本越低，权重越大）
                     if len(match_costs) > 0:
                         # 使用指数衰减的权重，添加数值稳定性
@@ -153,7 +153,7 @@ class HungarianMatcher(nn.Module):
                             inner_weights = torch.ones_like(match_costs) / len(match_costs)
                     else:
                         inner_weights = torch.empty(0, dtype=torch.float32, device=c_i.device)
-                    
+
                     # 存储匹配结果和权重
                     all_src_indices.extend(row_ind.tolist())
                     all_tgt_indices.extend(col_ind.tolist())
@@ -167,7 +167,7 @@ class HungarianMatcher(nn.Module):
                     torch.as_tensor(all_tgt_indices, dtype=torch.int64).to(device)
                 ))
                 weights.append(torch.as_tensor(all_weights, dtype=torch.float32).to(device))
-            
+
             return indices, weights
         else:
             indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]

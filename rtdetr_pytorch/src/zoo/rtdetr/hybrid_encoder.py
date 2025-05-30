@@ -186,7 +186,6 @@ class TransformerEncoderLayer(nn.Module):
             src = self.norm2(src)
         return src
 
-
 class TransformerEncoder(nn.Module):
     def __init__(self, encoder_layer, num_layers, norm=None):
         super(TransformerEncoder, self).__init__()
@@ -203,7 +202,6 @@ class TransformerEncoder(nn.Module):
             output = self.norm(output)
 
         return output
-
 
 class CrossAttentionEncoderLayer(nn.Module):
     def __init__(self,
@@ -310,7 +308,6 @@ class CrossAttentionEncoder(nn.Module):
 
         return output
 
-
 class FeatureSelectionModule(nn.Module):
     def __init__(self, in_chan, out_chan, norm="GN"):
         super(FeatureSelectionModule, self).__init__()
@@ -324,53 +321,6 @@ class FeatureSelectionModule(nn.Module):
         x = x + feat
         feat = self.conv(x)
         return feat
-
-
-class AttentionGuidanceModule(nn.Module):
-    """注意力引导模块，用于生成注意力掩码，帮助模型关注潜在目标区域"""
-    def __init__(self, in_channels, hidden_dim=256):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, hidden_dim, 3, padding=1)
-        self.bn1 = nn.BatchNorm2d(hidden_dim)
-        self.conv2 = nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1)
-        self.bn2 = nn.BatchNorm2d(hidden_dim)
-        self.conv3 = nn.Conv2d(hidden_dim, 1, 1)
-        self.sigmoid = nn.Sigmoid()
-        
-        # 添加空间注意力
-        self.spatial_attention = nn.Sequential(
-            nn.Conv2d(2, 1, kernel_size=7, padding=3),
-            nn.BatchNorm2d(1),
-            nn.Sigmoid()
-        )
-        
-        # 添加通道注意力
-        self.channel_attention = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(hidden_dim, hidden_dim // 4, 1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(hidden_dim // 4, hidden_dim, 1),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        # 基础特征提取
-        feat = F.relu(self.bn1(self.conv1(x)))
-        feat = F.relu(self.bn2(self.conv2(feat)))
-        
-        # 通道注意力
-        channel_att = self.channel_attention(feat)
-        feat = feat * channel_att
-        
-        # 空间注意力
-        avg_out = torch.mean(feat, dim=1, keepdim=True)
-        max_out, _ = torch.max(feat, dim=1, keepdim=True)
-        spatial_att = self.spatial_attention(torch.cat([avg_out, max_out], dim=1))
-        feat = feat * spatial_att
-        
-        # 生成掩码
-        mask = self.sigmoid(self.conv3(feat))
-        return mask
 
 
 @register
@@ -403,18 +353,9 @@ class HybridEncoder(nn.Module):
                  act='silu',
                  # 评估时输入图像的固定空间尺寸
                  eval_spatial_size=None,
-                 # 是否使用deformable_encoder
-                 deformable_encoder=False,
-                 # 是否使用交叉注意力
-                 use_cross_attention=False,
                  # 交叉注意力Deformable Attention中参考点的个数
                  num_cross_attention_points=4,
-                 # 是否使用全局注意力
-                 use_global_attention=False,
-                 # 开启FPN
-                 use_fpn=False,
-                 # 是否使用注意力引导
-                 use_attention_guidance=True):
+                 enable_cross_attention=False):
         super().__init__()
         self.in_channels = in_channels
         self.feat_strides = feat_strides
@@ -423,11 +364,7 @@ class HybridEncoder(nn.Module):
         self.num_encoder_layers = num_encoder_layers
         self.pe_temperature = pe_temperature
         self.eval_spatial_size = eval_spatial_size
-        self.deformable_encoder = deformable_encoder
-        self.use_fpn = use_fpn
-        self.use_cross_attention = use_cross_attention
-        self.use_global_attention = use_global_attention
-        self.use_attention_guidance = use_attention_guidance
+        self.enable_cross_attention = enable_cross_attention
 
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
@@ -467,30 +404,29 @@ class HybridEncoder(nn.Module):
             num_encoder_layers,
         )
 
-        if self.use_fpn:
-            # top-down fpn
-            # FPN参数量400W
-            # 从高层级到低层级，通过上采样和特征融合逐步生成金字塔特征
-            self.lateral_convs = nn.ModuleList()
-            self.fpn_blocks = nn.ModuleList()
-            for _ in range(len(in_channels) - 1, 0, -1):
-                self.lateral_convs.append(ConvNormLayer(hidden_dim, hidden_dim, 1, 1, act=act))
-                # 从上到下降维
-                self.fpn_blocks.append(
-                    CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
-                )
+        # top-down fpn
+        # FPN参数量400W
+        # 从高层级到低层级，通过上采样和特征融合逐步生成金字塔特征
+        self.lateral_convs = nn.ModuleList()
+        self.fpn_blocks = nn.ModuleList()
+        for _ in range(len(in_channels) - 1, 0, -1):
+            self.lateral_convs.append(ConvNormLayer(hidden_dim, hidden_dim, 1, 1, act=act))
+            # 从上到下降维
+            self.fpn_blocks.append(
+                CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
+            )
 
-            # bottom-up pan
-            # 从低层级到高层级，通过下采样和特征融合进一步优化金字塔特征
-            self.pan_blocks = nn.ModuleList()
-            self.downsample_convs = nn.ModuleList()
-            for _ in range(len(in_channels) - 1):
-                self.downsample_convs.append(
-                    ConvNormLayer(hidden_dim, hidden_dim, 3, 2, act=act)
-                )
-                self.pan_blocks.append(
-                    CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
-                )
+        # bottom-up pan
+        # 从低层级到高层级，通过下采样和特征融合进一步优化金字塔特征
+        self.pan_blocks = nn.ModuleList()
+        self.downsample_convs = nn.ModuleList()
+        for _ in range(len(in_channels) - 1):
+            self.downsample_convs.append(
+                ConvNormLayer(hidden_dim, hidden_dim, 3, 2, act=act)
+            )
+            self.pan_blocks.append(
+                CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
+            )
 
         # 添加上采样和下采样卷积层
         self.upsample_convs = nn.ModuleList()
@@ -542,13 +478,6 @@ class HybridEncoder(nn.Module):
             self.downsample_selection.append(
                 FeatureSelectionModule(hidden_dim, hidden_dim)
             )
-
-        # 添加注意力引导模块
-        if self.use_attention_guidance:
-            self.attention_guidance = nn.ModuleList([
-                AttentionGuidanceModule(in_channel, hidden_dim)
-                for in_channel in in_channels
-            ])
 
         self._reset_parameters()
 
@@ -610,43 +539,43 @@ class HybridEncoder(nn.Module):
 
         return torch.concat([out_w.sin(), out_w.cos(), out_h.sin(), out_h.cos()], dim=1)[None, :, :]
 
-    def forward_global_attention(self, proj_feats):
-        memory_list = []
-        memory_spatial_shapes = []
-        pos_embeds = []
-        for lvl, enc_ind in enumerate(self.use_encoder_idx):
-            feat = proj_feats[enc_ind]
-            B, C, H, W = feat.shape
-            # flatten
-            src = feat.flatten(2).permute(0, 2, 1)  # [B, HW, C]
-            # 1. 位置编码
-            if self.training or self.eval_spatial_size is None:
-                pos_embed = self.build_2d_sincos_position_embedding(
-                    W, H, self.hidden_dim, self.pe_temperature).to(src.device)
-            else:
-                pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src.device)
-            # 2. 加上 level embedding
-            lvl_pos = self.level_embed[lvl].view(1, 1, -1)  # [1, 1, C]
-            pos_embeds.append(pos_embed + lvl_pos)
-            memory_list.append(src)
-            memory_spatial_shapes.append((H, W))
-        pos_embed = torch.cat(pos_embeds, dim=1)
-        memory = torch.cat(memory_list, dim=1)  # [B, sum(HW), C]
-        memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)  # [n_levels, 2]
-
-
-        # 4. 调用 attention
-        memory_out = self.encoder[lvl](memory,
-                                  pos_embed=pos_embed,
-                                  spatial_shapes=memory_spatial_shapes,
-                                  memory=memory,
-                                  memory_spatial_shapes=memory_spatial_shapes)
-
-        # 5. 拆分回各尺度
-        split_sizes = [H * W for (H, W) in memory_spatial_shapes]
-        outs = torch.split(memory_out, split_sizes, dim=1)
-        outs = [o.permute(0, 2, 1).reshape(B, C, H, W) for o, (H, W) in zip(outs, memory_spatial_shapes)]
-        return outs
+    # def forward_global_attention(self, proj_feats):
+    #     memory_list = []
+    #     memory_spatial_shapes = []
+    #     pos_embeds = []
+    #     for lvl, enc_ind in enumerate(self.use_encoder_idx):
+    #         feat = proj_feats[enc_ind]
+    #         B, C, H, W = feat.shape
+    #         # flatten
+    #         src = feat.flatten(2).permute(0, 2, 1)  # [B, HW, C]
+    #         # 1. 位置编码
+    #         if self.training or self.eval_spatial_size is None:
+    #             pos_embed = self.build_2d_sincos_position_embedding(
+    #                 W, H, self.hidden_dim, self.pe_temperature).to(src.device)
+    #         else:
+    #             pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src.device)
+    #         # 2. 加上 level embedding
+    #         lvl_pos = self.level_embed[lvl].view(1, 1, -1)  # [1, 1, C]
+    #         pos_embeds.append(pos_embed + lvl_pos)
+    #         memory_list.append(src)
+    #         memory_spatial_shapes.append((H, W))
+    #     pos_embed = torch.cat(pos_embeds, dim=1)
+    #     memory = torch.cat(memory_list, dim=1)  # [B, sum(HW), C]
+    #     memory_spatial_shapes = torch.tensor(memory_spatial_shapes, device=memory.device)  # [n_levels, 2]
+    #
+    #
+    #     # 4. 调用 attention
+    #     memory_out = self.encoder[lvl](memory,
+    #                               pos_embed=pos_embed,
+    #                               spatial_shapes=memory_spatial_shapes,
+    #                               memory=memory,
+    #                               memory_spatial_shapes=memory_spatial_shapes)
+    #
+    #     # 5. 拆分回各尺度
+    #     split_sizes = [H * W for (H, W) in memory_spatial_shapes]
+    #     outs = torch.split(memory_out, split_sizes, dim=1)
+    #     outs = [o.permute(0, 2, 1).reshape(B, C, H, W) for o, (H, W) in zip(outs, memory_spatial_shapes)]
+    #     return outs
 
     def forward_cross_attention(self, proj_feats):
         for lvl, enc_ind in enumerate(self.use_encoder_idx):
@@ -741,28 +670,26 @@ class HybridEncoder(nn.Module):
                 memory = self.encoder[i](src_flatten, pos_embed=pos_embed)
                 proj_feats[enc_ind] = memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()
 
-        if self.use_fpn:
-        # broadcasting and fusion
-            inner_outs = [proj_feats[-1]]
-            for idx in range(len(self.in_channels) - 1, 0, -1):
-                feat_high = inner_outs[0]
-                feat_low = proj_feats[idx - 1]
-                feat_high = self.lateral_convs[len(self.in_channels) - 1 - idx](feat_high)
-                inner_outs[0] = feat_high
-                upsample_feat = F.interpolate(feat_high, scale_factor=2., mode='nearest')
-                inner_out = self.fpn_blocks[len(self.in_channels)-1-idx](torch.concat([upsample_feat, feat_low], dim=1))
-                inner_outs.insert(0, inner_out)
+        inner_outs = [proj_feats[-1]]
+        for idx in range(len(self.in_channels) - 1, 0, -1):
+            feat_high = inner_outs[0]
+            feat_low = proj_feats[idx - 1]
+            feat_high = self.lateral_convs[len(self.in_channels) - 1 - idx](feat_high)
+            inner_outs[0] = feat_high
+            upsample_feat = F.interpolate(feat_high, scale_factor=2., mode='nearest')
+            inner_out = self.fpn_blocks[len(self.in_channels)-1-idx](torch.concat([upsample_feat, feat_low], dim=1))
+            inner_outs.insert(0, inner_out)
 
-            outs = [inner_outs[0]]
-            for idx in range(len(self.in_channels) - 1):
-                feat_low = outs[-1]
-                feat_high = inner_outs[idx + 1]
-                downsample_feat = self.downsample_convs[idx](feat_low)
-                out = self.pan_blocks[idx](torch.concat([downsample_feat, feat_high], dim=1))
-                outs.append(out)
-            proj_feats = outs
+        outs = [inner_outs[0]]
+        for idx in range(len(self.in_channels) - 1):
+            feat_low = outs[-1]
+            feat_high = inner_outs[idx + 1]
+            downsample_feat = self.downsample_convs[idx](feat_low)
+            out = self.pan_blocks[idx](torch.concat([downsample_feat, feat_high], dim=1))
+            outs.append(out)
+        proj_feats = outs
 
-        if self.use_cross_attention:
+        if self.enable_cross_attention:
             proj_feats = self.forward_cross_attention(proj_feats)
         return proj_feats
 
