@@ -365,6 +365,7 @@ class HybridEncoder(nn.Module):
         self.pe_temperature = pe_temperature
         self.eval_spatial_size = eval_spatial_size
         self.enable_cross_attention = enable_cross_attention
+        self.eval_spatial_size = eval_spatial_size
 
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
