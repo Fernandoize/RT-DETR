@@ -14,8 +14,6 @@ from torch import nn
 from .box_ops import box_cxcywh_to_xyxy, generalized_box_iou
 
 from src.core import register
-from src.zoo.loss.wasserstein_loss import WassersteinLoss
-
 
 # TODO 从onetomany入手，增加训练阶段的one to many, 预测阶段不需要one to many
 
